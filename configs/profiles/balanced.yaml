@@ -1,0 +1,14 @@
+# Balanced 档位 — 中等 GPU/低功耗工作站(推理仍走 CUDA,降低检测频率)
+
+profile: balanced
+
+vision:
+  device: "cuda"
+  det_size: [480, 480]
+  det_interval: 3
+  recognition:
+    cooldown_frames: 240
+    queue_size: 6
+
+camera_defaults:
+  profile: "balanced"

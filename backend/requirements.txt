@@ -1,0 +1,16 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29
+alembic>=1.13
+pydantic-settings>=2.5
+psutil>=5.9
+apscheduler>=3.10
+python-multipart>=0.0.9
+PyYAML>=6.0
+
+# 推理内核(InsightFace 官方依赖)
+insightface>=0.7.3
+onnxruntime-gpu>=1.15        # GPU 推理(CUDA);纯 CPU 环境改用 onnxruntime
+opencv-python-headless>=4.8
+numpy>=1.24

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+
+# Data（运行时产物: 底库 pickle / 头像 / 抓拍）
+face_db/
+
+# 模型: 保留 models/buffalo_s/*.onnx 随仓库提供, 但禁止误提交下载的 zip 包
+models/*.zip
+models/**/*.zip
+
+# Environment（含数据库密码，不要提交）
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db

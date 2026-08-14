@@ -1,0 +1,15 @@
+# Desktop 档位 — NVIDIA GPU 工作站(推荐默认档,推理全部走 CUDA)
+# 覆盖 default.yaml 的键以本文件为准。
+
+profile: desktop
+
+vision:
+  device: "cuda"
+  det_size: [640, 640]
+  det_interval: 2
+  recognition:
+    cooldown_frames: 180
+    queue_size: 8
+
+camera_defaults:
+  profile: "desktop"

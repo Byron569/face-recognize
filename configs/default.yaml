@@ -1,0 +1,78 @@
+# ============================================================================
+# AI Monitor — 默认配置(所有键的基线值)
+#
+# 配置级联(由低到高,后者覆盖前者):
+#   configs/default.yaml  →  configs/profiles/{profile}.yaml  →  数据库 cameras.config(JSONB)  →  .env / 环境变量
+#
+# 设计原则: 所有可调参数集中于此,代码中不允许出现硬编码数值。
+# ============================================================================
+
+# ── 后端服务 ────────────────────────────────────────────────
+server:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+
+# ── 数据库 ──────────────────────────────────────────────────
+database:
+  url: "postgresql+asyncpg://postgres:123456@localhost:5432/ai_monitor"
+
+# ── 存储路径(相对项目根)────────────────────────────────────
+storage:
+  avatars_dir: "face_db/avatars"
+
+# ── 视频流(WebSocket → 前端)────────────────────────────────
+stream:
+  max_height: 480          # 推流前缩放最大高度(px)
+  jpeg_quality: 70         # JPEG 质量 [1,100]
+  push_fps: 10             # 推流帧率上限
+
+# ── InsightFace 视觉内核(推理默认 GPU)───────────────────────
+vision:
+  model_pack: "buffalo_s"          # insightface 模型包(buffalo_s / buffalo_l / buffalo_sc)
+  models_root: "models"            # 模型根目录(相对项目根;也支持绝对路径或 ~/.insightface)
+  device: "cuda"                   # cuda(默认,全部推理走 GPU)/ cpu / auto(自动检测)
+  providers_cuda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+  providers_cpu: ["CPUExecutionProvider"]
+  det_size: [640, 640]             # SCRFD 检测输入尺寸(或 [[128,128],[640,640]] 多尺度)
+  det_thresh: 0.5                  # 检测置信度阈值
+  max_faces: 0                     # 单帧最多检测人脸数(0=不限)
+  det_interval: 2                  # 每 N 帧执行一次检测
+
+  track:                           # 轻量 IoU 跟踪器
+    iou_threshold: 0.3
+    max_lost: 15                   # 丢失多少帧后删除 track
+    min_hits: 2                    # 连续命中多少帧后确认
+    max_tracks: 30                 # 最大并行 track 数
+
+  recognition:                     # 识别调度(ArcFace 512-d 余弦相似度)
+    threshold: 0.40                # 匹配阈值 [0,1]
+    cooldown_frames: 300           # 未识别 track 重试冷却(帧)
+    recognized_cooldown_frames: 600  # 已识别 track 重验证冷却(帧)
+    failed_backoff_frames: 90      # 每次识别失败额外冷却(帧)
+    max_attempts: 20               # 每 track 最大失败次数(0=不限)
+    queue_size: 8                  # 识别 worker 队列上限
+    log_to_db: true                # 识别结果写入 recognition_logs
+    event_to_db: true              # 识别事件写入 events 表
+
+# ── 可插拔任务(不写死: 启用/禁用 + 实现路径均可配置)─────────
+tasks:
+  face_recognition:
+    enabled: true
+    class_path: "app.tasks.builtin.face_recognition_task.FaceRecognitionTask"
+  # 预留: 跌倒检测等扩展任务安装后,在此添加条目并设 enabled: true 即可接入
+  fall_detection:
+    enabled: false
+    class_path: null
+
+# ── 摄像头默认值(数据库无配置时使用)─────────────────────────
+camera_defaults:
+  width: 640          # 采集分辨率(0 = 跟随源原生分辨率,由 /api/cameras/{id}/resolution 写入)
+  height: 480
+  max_width: 0        # 采集兜底缩放上限(0 = 不缩放)
+  profile: "desktop"
+
+# ── 数据清理 ────────────────────────────────────────────────
+cleanup:
+  event_retention_days: 30
+  cron_hour: 3

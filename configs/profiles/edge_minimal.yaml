@@ -1,0 +1,19 @@
+# Edge Minimal 档位 — 低算力/边缘设备
+# 注意: 与 desktop/balanced 不同,本档允许 device=cpu,供无 NVIDIA GPU 的边缘机使用;
+# 有 GPU 的环境请直接用 desktop。
+
+profile: edge_minimal
+
+vision:
+  device: "cpu"
+  det_size: [320, 320]
+  det_thresh: 0.45
+  det_interval: 5
+  track:
+    max_tracks: 10
+  recognition:
+    cooldown_frames: 300
+    queue_size: 4
+
+camera_defaults:
+  profile: "edge_minimal"

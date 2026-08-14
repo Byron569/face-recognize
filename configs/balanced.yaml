@@ -1,0 +1,102 @@
+# Vision AI — Balanced Profile (中端边缘 / 低功耗笔记本)
+#
+# 用法: python main.py --profile balanced
+#
+# 特点: CPU推理 / 416px检测 / IoU跟踪 / 更大的识别队列
+
+profile: balanced
+
+camera:
+  index: 0
+  width: 640
+  height: 480
+  api: null
+
+detector:
+  type: scrfd
+  model_name: "buffalo_s"
+  input_size: 416
+  conf_threshold: 0.5
+  nms_threshold: 0.4
+  detection_interval: 3
+  device: cpu
+
+recognition:
+  model_name: "buffalo_s"
+  recognition_threshold: 0.70
+  recognition_cooldown: 240
+  recognized_cooldown: 600
+  failed_backoff: 90
+  max_attempts: 20
+  device: null
+  min_face_size: 48
+  blur_threshold: 80
+  min_quality_score: 0.55
+  max_queue_size: 6
+  queue_pressure_threshold: 4
+  enable_embedding_cache: true
+  embedding_cache_ttl: 30
+  max_cache_size: 128
+
+tracking:
+  enabled: true
+  type: iou
+  iou_threshold: 0.3
+  max_lost: 20
+  min_hits: 2
+
+pipeline:
+  window_name: "Vision AI Balanced"
+  quit_key: "q"
+  fps_window_size: 30
+  worker_queue_size: 6
+
+database:
+  path: "face_db/identities.pkl"
+
+runtime:
+  mode: balanced
+  use_gpu: false
+  enable_behavior: false
+  enable_event_system: false
+  enable_alert: false
+  enable_reassociation: false
+  enable_region: false
+
+motion:
+  threshold: 2.0
+  history: 0
+  force_interval: 15
+
+scheduler:
+  detection_interval: 3
+  force_interval: 15
+  adaptive: true
+  target_fps: 20
+  min_interval: 2
+  max_interval: 8
+  motion_boost_frames: 10
+
+behavior:
+  stationary_threshold: 60
+  loitering_threshold: 300
+  alert_cooldown: 30
+
+regions: {}
+
+pose:
+  enabled: false
+
+fall_detection:
+  enabled: false
+
+# === VisionTask Plugins ===
+
+tasks:
+  fall_detection:
+    enabled: false
+    interval: 5
+    model: null
+    device: cpu
+    confidence_threshold: 0.6
+    min_duration_frames: 10

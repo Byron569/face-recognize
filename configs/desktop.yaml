@@ -1,0 +1,106 @@
+# Vision AI — Desktop Profile (NVIDIA GPU / 高性能工作站)
+#
+# 用法: python main.py --profile desktop
+#
+# 特点: CUDA GPU加速 / 640px检测 / ByteTrack匈牙利跟踪 / 全功能
+
+profile: desktop
+
+camera:
+  index: 0
+  width: 640
+  height: 480
+  api: null
+
+detector:
+  type: scrfd
+  model_name: "buffalo_s"
+  input_size: 640
+  conf_threshold: 0.5
+  nms_threshold: 0.4
+  detection_interval: 2
+  device: cuda
+
+recognition:
+  model_name: "buffalo_s"
+  recognition_threshold: 0.70
+  recognition_cooldown: 180
+  recognized_cooldown: 600
+  failed_backoff: 90
+  max_attempts: 20
+  device: cuda
+  min_face_size: 48
+  blur_threshold: 80
+  min_quality_score: 0.55
+  max_queue_size: 8
+  queue_pressure_threshold: 5
+  enable_embedding_cache: true
+  embedding_cache_ttl: 30
+  max_cache_size: 128
+
+tracking:
+  enabled: true
+  type: bytetrack
+  track_thresh: 0.5
+  max_disappeared: 30
+  match_thresh: 0.8
+  frame_rate: 30
+
+pipeline:
+  window_name: "Vision AI Desktop"
+  quit_key: "q"
+  fps_window_size: 30
+  worker_queue_size: 8
+
+database:
+  path: "face_db/identities.pkl"
+
+runtime:
+  mode: desktop
+  use_gpu: true
+  enable_behavior: false
+  enable_event_system: false
+  enable_alert: false
+  enable_reassociation: false
+  enable_region: false
+
+motion:
+  threshold: 2.0
+  history: 0
+  force_interval: 15
+
+scheduler:
+  detection_interval: 2
+  force_interval: 15
+  adaptive: true
+  target_fps: 30
+  min_interval: 1
+  max_interval: 5
+  motion_boost_frames: 10
+
+behavior:
+  stationary_threshold: 60
+  loitering_threshold: 300
+  alert_cooldown: 30
+
+regions: {}
+
+pose:
+  enabled: false
+
+fall_detection:
+  enabled: false
+
+tensorrt:
+  enabled: false
+
+# === VisionTask Plugins ===
+
+tasks:
+  fall_detection:
+    enabled: false
+    interval: 5
+    model: null
+    device: cpu
+    confidence_threshold: 0.6
+    min_duration_frames: 10

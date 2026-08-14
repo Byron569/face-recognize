@@ -1,0 +1,135 @@
+# Vision AI — Edge Minimal Profile (树莓派 / Jetson Nano / RK3588 / Orange Pi)
+#
+# 用法: python main.py --profile edge_minimal
+#      python main.py --config config/edge_minimal.yaml
+#
+# 特点: 无GPU / 无行为分析 / 无事件告警 / 320px检测 / 仅IoU跟踪
+
+profile: edge_minimal
+
+camera:
+  index: 0
+  width: 640
+  height: 480
+  api: null
+
+detector:
+  type: scrfd
+  model_name: "buffalo_s"
+  input_size: 320
+  conf_threshold: 0.5
+  nms_threshold: 0.4
+  detection_interval: 4
+  device: cpu
+
+recognition:
+  model_name: "buffalo_s"
+  recognition_threshold: 0.70
+  recognition_cooldown: 300
+  recognized_cooldown: 600
+  failed_backoff: 90
+  max_attempts: 20
+  device: null
+  min_face_size: 48
+  blur_threshold: 80
+  min_quality_score: 0.55
+  max_queue_size: 4
+  queue_pressure_threshold: 3
+  enable_embedding_cache: true
+  embedding_cache_ttl: 30
+  max_cache_size: 64
+
+tracking:
+  enabled: true
+  type: iou
+  iou_threshold: 0.3
+  max_lost: 15
+  min_hits: 2
+
+pipeline:
+  window_name: "Vision AI Edge"
+  quit_key: "q"
+  fps_window_size: 30
+  worker_queue_size: 4
+  no_render: true
+
+database:
+  path: "face_db/identities.pkl"
+
+runtime:
+  mode: edge_minimal
+  use_gpu: false
+  enable_behavior: false
+  enable_event_system: true
+  enable_alert: true
+  enable_reassociation: false
+  enable_region: false
+
+motion:
+  threshold: 2.0
+  history: 0
+  force_interval: 15
+
+scheduler:
+  detection_interval: 4
+  force_interval: 15
+  adaptive: true
+  target_fps: 20
+  min_interval: 2
+  max_interval: 8
+  motion_boost_frames: 10
+
+behavior:
+  stationary_threshold: 60
+  loitering_threshold: 300
+  alert_cooldown: 30
+
+regions: {}
+
+pose:
+  enabled: false
+
+fall_detection:
+  enabled: false
+
+# === VisionTask Plugins ===
+
+tasks:
+  fall_detection:
+    enabled: true
+    backend: "ncnn"                  # ncnn (ARM NEON) / onnx / ultralytics
+    model_path: "models/yolov8n-pose" # NCNN: 不含扩展名 (.param + .bin)
+    device: "cpu"
+    interval: 15                      # 每15帧推理一次
+    input_size: 320                    # 边缘 320px
+    confidence_threshold: 0.4          # 降低补偿小分辨率
+
+    fall:
+      horizontal_ar_threshold: 0.6
+      angle_threshold: 120
+      torso_inclination_threshold: 65
+      min_fall_pose_duration: 3.5
+      re_threshold: 20
+      gf_threshold: 8000
+      head_descent_threshold: 0.2
+      window_size: 10
+      window_trigger_ratio: 0.5
+      min_consecutive_triggers: 3
+      min_standing_ar: 1.2
+      min_bbox_area: 3000
+      ema_alpha: 0.3
+      sg_window: 7
+      sg_polyorder: 2
+    features:
+      head_descent_window: 20
+      head_descent_min_pixels: 15
+    tracking:
+      ghost_timeout: 3.0
+      fallen_ghost_timeout: 5.0
+      distance_threshold: 150
+      history_length: 36
+    cross_camera:
+      hist_threshold: 0.5
+    camera_process:
+      roi_conf: 0.25
+      roi_enabled: true
