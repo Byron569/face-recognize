@@ -1,33 +1,19 @@
-"""vision 内核单元测试(IoU 跟踪器 + 数据模型 + 任务接口 + 配置)。"""
+"""vision 内核单元测试(ByteTrack 跟踪器 + 数据模型 + 任务接口 + 配置)。"""
 
 from vision.config import TrackConfig, VisionConfig
 from vision.events import FaceResult, PipelineContext, TrackResult, VisionEvent
 from vision.tasks import VisionTask
-from vision.tracker import IoUTracker, _iou
+from vision.tracker import ByteTracker
 
 
 def _face(x1, y1, x2, y2, score=0.9):
     return FaceResult(bbox=(x1, y1, x2, y2), det_score=score)
 
 
-# ── IoU ──────────────────────────────────────────────────
-
-def test_iou_full_overlap():
-    assert _iou((0, 0, 100, 100), (0, 0, 100, 100)) == 1.0
-
-
-def test_iou_no_overlap():
-    assert _iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
-
-
-def test_iou_half():
-    assert abs(_iou((0, 0, 100, 100), (50, 0, 150, 100)) - 1 / 3) < 1e-6
-
-
-# ── 跟踪器 ───────────────────────────────────────────────
+# ── ByteTrack 跟踪器 ──────────────────────────────────────
 
 def test_tracker_creates_stable_id():
-    tracker = IoUTracker(TrackConfig(min_hits=2, max_lost=15))
+    tracker = ByteTracker(TrackConfig(min_hits=2, track_buffer=30, frame_rate=30))
     snap1 = tracker.update([_face(10, 10, 110, 110)], 1)
     snap2 = tracker.update([_face(12, 12, 112, 112)], 2)
     assert len(snap1) == len(snap2) == 1
@@ -36,23 +22,23 @@ def test_tracker_creates_stable_id():
     assert snap2[0].hits == 2
 
 
-def test_tracker_no_detection_increments_lost():
-    tracker = IoUTracker(TrackConfig(max_lost=3))
+def test_tracker_removes_lost_track_after_buffer():
+    tracker = ByteTracker(TrackConfig(min_hits=1, track_buffer=3, frame_rate=30))
     tracker.update([_face(10, 10, 100, 100)], 1)
-    for i in range(2, 6):  # 4 帧无检测 → 超过 max_lost 删除
+    for i in range(2, 8):  # 超过 buffer 后删除
         tracker.update([], i)
     assert tracker.active_count == 0
 
 
 def test_tracker_separates_two_faces():
-    tracker = IoUTracker(TrackConfig(min_hits=1))
+    tracker = ByteTracker(TrackConfig(min_hits=1))
     snap = tracker.update([_face(0, 0, 50, 50), _face(200, 200, 260, 260)], 1)
     assert len(snap) == 2
     assert snap[0].track_id != snap[1].track_id
 
 
 def test_tracker_identity_write_back():
-    tracker = IoUTracker(TrackConfig(min_hits=1))
+    tracker = ByteTracker(TrackConfig(min_hits=1))
     snap = tracker.update([_face(0, 0, 50, 50)], 1)
     assert tracker.set_identity(snap[0].track_id, "Byron", 0.87)
     snap2 = tracker.update([], 2)
@@ -61,10 +47,29 @@ def test_tracker_identity_write_back():
 
 
 def test_tracker_respects_max_tracks():
-    tracker = IoUTracker(TrackConfig(max_tracks=2, min_hits=1))
+    tracker = ByteTracker(TrackConfig(max_tracks=2, min_hits=1))
     faces = [_face(i * 100, 0, i * 100 + 50, 50) for i in range(5)]
     snap = tracker.update(faces, 1)
     assert len(snap) == 2
+
+
+def test_tracker_second_association_for_low_score():
+    """ByteTrack 核心:低置信度检测通过二次关联保持既有 ID(而非新建)。"""
+    tracker = ByteTracker(TrackConfig(min_hits=1))
+    tracker.update([_face(0, 0, 50, 50, score=0.9)], 1)
+    snap = tracker.update([_face(1, 1, 51, 51, score=0.3)], 2)
+    assert len(snap) == 1
+    assert snap[0].track_id == 1
+
+
+def test_tracker_re_activate_after_occlusion():
+    """丢失后重新出现,ID 复活(在 track_buffer 内)。"""
+    tracker = ByteTracker(TrackConfig(min_hits=1, track_buffer=30, frame_rate=30))
+    snap1 = tracker.update([_face(0, 0, 50, 50)], 1)
+    tracker.update([], 2)  # 丢失
+    snap3 = tracker.update([_face(2, 2, 52, 52)], 3)  # 复活
+    assert len(snap3) == 1
+    assert snap3[0].track_id == snap1[0].track_id
 
 
 # ── 数据模型 ─────────────────────────────────────────────
@@ -113,7 +118,8 @@ def test_vision_config_defaults_gpu():
     cfg = VisionConfig.from_dict({})
     assert cfg.device == "cuda"
     assert cfg.det_size == (640, 640)
-    assert cfg.track.iou_threshold == 0.3
+    assert cfg.track.track_thresh == 0.5
+    assert cfg.track.max_tracks == 30
     assert cfg.recognition.threshold == 0.40
 
 
@@ -122,11 +128,12 @@ def test_vision_config_from_yaml_shape():
         {
             "device": "cpu",
             "det_size": [320, 320],
-            "track": {"max_tracks": 10},
+            "track": {"max_tracks": 10, "track_thresh": 0.4},
             "recognition": {"threshold": 0.55},
         }
     )
     assert cfg.device == "cpu"
     assert cfg.det_size == (320, 320)
     assert cfg.track.max_tracks == 10
+    assert cfg.track.track_thresh == 0.4
     assert cfg.recognition.threshold == 0.55

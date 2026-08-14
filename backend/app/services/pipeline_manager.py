@@ -25,7 +25,7 @@ from fastapi import WebSocket
 from vision.camera import OpenCVFrameSource
 from vision.config import VisionConfig
 from vision.pipeline import VisionPipeline
-from vision.tracker import IoUTracker
+from vision.tracker import ByteTracker
 
 from .gallery import FaceGallery
 from .model_manager import EnginePool, get_engine_pool
@@ -105,7 +105,7 @@ class PipelineManager:
             max_width=int(camera_defaults.get("max_width", 0)),
         )
         engine = self._engine_pool.get(vision_cfg)
-        tracker = IoUTracker(vision_cfg.track)
+        tracker = ByteTracker(vision_cfg.track)
 
         # 2. 可插拔任务
         registry = TaskRegistry(config.get("tasks", {}))

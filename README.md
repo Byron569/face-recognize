@@ -8,7 +8,7 @@
 
 - **InsightFace 官方内核**:`FaceAnalysis` 一次推理完成检测 + 关键点 + 512-d embedding;切换 `buffalo_s/buffalo_l` 只需改配置
 - **推理默认 GPU**:CUDAExecutionProvider 优先,无 GPU 自动降级 CPU(日志告警)
-- **轻量 IoU 跟踪**:稳定 track_id,识别按冷却策略触发(新 track 优先 → 冷却 → 失败退避 → 重验证)
+- **ByteTrack 多目标跟踪**:卡尔曼滤波 + 两阶段关联(高/低置信度框分层匹配),稳定 track_id;识别按冷却策略触发(新 track 优先 → 冷却 → 失败退避 → 重验证)
 - **向量化识别**:人脸底库载入内存 numpy 矩阵,一次点积完成检索;注册/删除即时生效
 - **可插拔任务架构**:`class_path` 动态加载,跌倒检测等扩展任务零改动接入(见 docs/PLUGIN_GUIDE.md)
 - **全参数配置化**:`default.yaml` → `profiles/{desktop,balanced,edge_minimal}.yaml` → 摄像头个性化 JSONB,代码零硬编码

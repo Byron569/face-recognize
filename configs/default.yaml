@@ -39,10 +39,13 @@ vision:
   max_faces: 0                     # 单帧最多检测人脸数(0=不限)
   det_interval: 2                  # 每 N 帧执行一次检测
 
-  track:                           # 轻量 IoU 跟踪器
-    iou_threshold: 0.3
-    max_lost: 15                   # 丢失多少帧后删除 track
-    min_hits: 2                    # 连续命中多少帧后确认
+  track:                           # ByteTrack 多目标跟踪(卡尔曼 + 两阶段关联)
+    track_thresh: 0.5              # 高置信度检测阈值(进入第一轮关联)
+    low_thresh: 0.1                # 低置信度检测下限(低于丢弃)
+    match_thresh: 0.8              # 第一轮 IoU 关联阈值(1-IoU 成本上限)
+    track_buffer: 30               # lost 保留帧数(按 frame_rate 缩放)
+    min_hits: 3                    # 新轨迹连续命中确认帧数
+    frame_rate: 30                 # 用于 lost 保留时长缩放
     max_tracks: 30                 # 最大并行 track 数
 
   recognition:                     # 识别调度(ArcFace 512-d 余弦相似度)

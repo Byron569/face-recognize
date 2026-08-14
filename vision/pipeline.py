@@ -22,7 +22,7 @@ from .config import VisionConfig
 from .engine import InsightFaceEngine
 from .events import PipelineContext, VisionEvent
 from .tasks import VisionTask
-from .tracker import IoUTracker
+from .tracker import ByteTracker
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class VisionPipeline(threading.Thread):
         camera_id: str,
         source: FrameSource,
         engine: InsightFaceEngine,
-        tracker: IoUTracker,
+        tracker: ByteTracker,
         config: VisionConfig,
         tasks: Optional[List[VisionTask]] = None,
         on_frame: Optional[FrameCallback] = None,

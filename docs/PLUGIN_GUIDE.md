@@ -98,6 +98,6 @@ fall_detection:                                      # ← 任务专属配置节
 | `config` | dict | 任务自身配置节(如 tasks.fall_detection) |
 | `full_config` | dict | 摄像头完整级联配置 |
 | `gallery` | FaceGallery | 内存人脸底库(供识别类任务复用) |
-| `tracker` | IoUTracker | 跟踪器引用(可写回身份等) |
+| `tracker` | ByteTracker | 跟踪器引用(可写回身份等) |
 
 > 参照 `backend/app/tasks/builtin/face_recognition_task.py` —— 它是完整的最佳实践示例。

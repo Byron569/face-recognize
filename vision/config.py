@@ -12,18 +12,26 @@ from typing import Any, List, Optional, Tuple
 
 @dataclass
 class TrackConfig:
-    iou_threshold: float = 0.3
-    max_lost: int = 15
-    min_hits: int = 2
-    max_tracks: int = 30
+    """ByteTrack 参数(见 vision/tracker.py 移植说明)。"""
+
+    track_thresh: float = 0.5     # 高置信度检测阈值(高于此进入第一轮关联)
+    low_thresh: float = 0.1       # 低置信度检测下限(低于此直接丢弃)
+    match_thresh: float = 0.8     # 第一轮 IoU 关联阈值(成本 1-IoU 的上限)
+    track_buffer: int = 30        # lost 保留帧数(按 frame_rate 缩放为实际帧数)
+    min_hits: int = 3             # 新轨迹连续命中多少帧后确认(activate)
+    frame_rate: int = 30          # 用于 lost 保留时长的缩放
+    max_tracks: int = 30          # 最大活跃轨迹数
 
     @classmethod
     def from_dict(cls, cfg: Optional[dict]) -> "TrackConfig":
         cfg = cfg or {}
         return cls(
-            iou_threshold=float(cfg.get("iou_threshold", 0.3)),
-            max_lost=int(cfg.get("max_lost", 15)),
-            min_hits=int(cfg.get("min_hits", 2)),
+            track_thresh=float(cfg.get("track_thresh", 0.5)),
+            low_thresh=float(cfg.get("low_thresh", 0.1)),
+            match_thresh=float(cfg.get("match_thresh", 0.8)),
+            track_buffer=int(cfg.get("track_buffer", 30)),
+            min_hits=int(cfg.get("min_hits", 3)),
+            frame_rate=int(cfg.get("frame_rate", 30)),
             max_tracks=int(cfg.get("max_tracks", 30)),
         )
 

@@ -23,7 +23,7 @@
 │  vision/(纯推理内核,唯一依赖 InsightFace)                          │
 │  camera.py    帧采集(本地/RTSP/文件,自动重连)                      │
 │  engine.py    InsightFace 官方 FaceAnalysis 封装(GPU 优先)         │
-│  tracker.py   轻量 IoU 跟踪器(内核中唯一自研算法)                   │
+│  tracker.py   ByteTrack 多目标跟踪(卡尔曼 + 两阶段关联,移植自 IFzhang/ByteTrack) │
 │  tasks.py     可插拔任务接口(VisionTask ABC)                       │
 │  pipeline.py  工业化主循环:采集→检测→跟踪→任务→输出回调             │
 │  events.py    内核数据模型(FaceResult/TrackResult/VisionEvent)     │
@@ -58,7 +58,7 @@ OpenCVFrameSource.read() ──失败──▶ 指数退避重连
 [det_interval 降频] InsightFaceEngine.detect(frame)
         │  FaceResult: bbox / det_score / kps / embedding(512-d 归一化)
         ▼
-IoUTracker.update(detections)    贪心 IoU 关联,输出稳定 track_id
+ByteTracker.update(detections)    卡尔曼预测 + 两阶段 IoU 关联,输出稳定 track_id
         │  TrackResult: track_id / bbox / identity / embedding
         ▼
 for task in tasks:                VisionTask 接口(可插拔)
