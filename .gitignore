@@ -19,6 +19,8 @@ face_db/
 # 模型: 保留 models/buffalo_s/*.onnx 随仓库提供, 但禁止误提交下载的 zip 包
 models/*.zip
 models/**/*.zip
+# buffalo_l 识别器(w600k_r50.onnx 166MB)超 GitHub 单文件限制,不随仓库提供,需自行下载解压到 models/buffalo_l/
+models/buffalo_l/
 
 # Environment（含数据库密码，不要提交）
 .env

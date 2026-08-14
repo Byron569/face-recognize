@@ -29,7 +29,7 @@ stream:
 
 # ── InsightFace 视觉内核(推理默认 GPU)───────────────────────
 vision:
-  model_pack: "buffalo_s"          # insightface 模型包(buffalo_s / buffalo_l / buffalo_sc)
+  model_pack: "buffalo_l"          # insightface 模型包(buffalo_l 高精度 / buffalo_s 轻量 / buffalo_sc)
   models_root: "models"            # 模型根目录(相对项目根;也支持绝对路径或 ~/.insightface)
   device: "cuda"                   # cuda(默认,全部推理走 GPU)/ cpu / auto(自动检测)
   providers_cuda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -60,7 +60,7 @@ vision:
 
   registration:                    # 注册/追加特征质量筛选(仅注册路径生效,避免低质量 embedding 入库)
     min_face_size: 48              # 人脸框最短边(px),低于此拒绝
-    min_det_score: 0.6             # 检测置信度下限(实时推理 det_thresh=0.5,注册要求更高)
+    min_det_score: 0.5             # 注册时检测置信度下限(0.5=与实时 det_thresh 一致;不同检测器标定不同,可调高收紧)
 
 # ── 可插拔任务(不写死: 启用/禁用 + 实现路径均可配置)─────────
 tasks:

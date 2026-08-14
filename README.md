@@ -34,8 +34,13 @@ npm install
 npm run dev                   # http://localhost:3000(已代理 /api 与 /ws)
 ```
 
-> 模型:推理使用 `models/buffalo_s/`(det_500m + w600k_mbf,已随仓库提供);
-> 切换模型包后若本地无模型,insightface 会按官方通道自动下载。
+> 模型:默认高精度档 `models/buffalo_l/`(SCRFD-10G 检测 + ArcFace ResNet50 识别);
+> buffalo_l 约 275MB、识别器 166MB 超 GitHub 单文件限制,不随仓库提供 —— 首次使用请下载:
+> `https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip`
+> 解压到 `models/buffalo_l/`(zip 内文件直接放在该目录)。
+> 轻量档 `models/buffalo_s/`(det_500m + w600k_mbf)已随仓库提供,切换 `vision.model_pack` 即可;
+> 若本地无模型,insightface 也会按官方通道自动下载。
+> ⚠️ 切换模型包后 embedding 空间不兼容,**底库需重新注册**。
 
 ## 文档
 
