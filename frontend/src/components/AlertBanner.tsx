@@ -8,15 +8,16 @@ interface AlertItem {
   camera_id: string;
   identity_name: string | null;
   created_at: string;
+  count: number;
 }
 
 // 全局事件总线 — 由 /ws/events 实时推送
 const alertBus = {
-  _listeners: new Set<(a: AlertItem) => void>(),
-  push(alert: AlertItem) {
+  _listeners: new Set<(a: Omit<AlertItem, 'count'>) => void>(),
+  push(alert: Omit<AlertItem, 'count'>) {
     this._listeners.forEach((fn) => fn(alert));
   },
-  subscribe(fn: (a: AlertItem) => void) {
+  subscribe(fn: (a: Omit<AlertItem, 'count'>) => void) {
     this._listeners.add(fn);
     return () => { this._listeners.delete(fn); };
   },
@@ -24,7 +25,21 @@ const alertBus = {
 
 export { alertBus };
 
-/** 顶部实时告警横幅(/ws/events 推送驱动)。 */
+// 告警类事件用醒目配色;常规事件(识别等)用低调 info 样式
+const alertTypeOf: Record<string, 'error' | 'warning' | 'info'> = {
+  fall_detected: 'error',
+  fall_potential: 'warning',
+  intrusion: 'error',
+  loitering: 'warning',
+};
+
+const MAX_ALERTS = 3;
+
+/**
+ * 事件提示条(页面内嵌、不悬浮遮挡画面):
+ * - 普通文档流布局,位于页面内容顶部,不覆盖视频
+ * - 同一摄像头 + 同类型事件合并计数,避免刷屏
+ */
 export default function AlertBanner() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -33,7 +48,18 @@ export default function AlertBanner() {
 
   useEffect(() => {
     return alertBus.subscribe((alert) => {
-      setAlerts((prev) => [alert, ...prev].slice(0, 5));
+      setAlerts((prev) => {
+        const idx = prev.findIndex(
+          (x) => x.event_type === alert.event_type && x.camera_id === alert.camera_id
+        );
+        if (idx >= 0) {
+          // 合并同类事件:计数 +1,更新触发时间
+          const next = [...prev];
+          next[idx] = { ...next[idx], count: next[idx].count + 1, created_at: alert.created_at };
+          return next;
+        }
+        return [{ ...alert, count: 1 }, ...prev].slice(0, MAX_ALERTS);
+      });
     });
   }, []);
 
@@ -76,16 +102,16 @@ export default function AlertBanner() {
   if (alerts.length === 0) return null;
 
   return (
-    <div style={{ position: 'fixed', top: 48, left: 220, right: 0, zIndex: 1000 }}>
+    <div style={{ marginBottom: 12, position: 'relative', zIndex: 10 }}>
       {alerts.map((a) => {
         const meta = eventMeta[a.event_type];
         const title = meta ? meta.label : a.event_type;
         return (
           <Alert
             key={a.id}
-            message={`${title} — ${a.camera_id}`}
+            message={`${title} — ${a.camera_id}${a.count > 1 ? ` ×${a.count}` : ''}`}
             description={a.identity_name || 'Unknown person'}
-            type="error"
+            type={alertTypeOf[a.event_type] ?? 'info'}
             banner
             closable
             onClose={() => setAlerts((prev) => prev.filter((x) => x.id !== a.id))}
