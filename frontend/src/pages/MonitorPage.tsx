@@ -46,7 +46,7 @@ export default function MonitorPage() {
       <AlertBanner />
       <Row gutter={[12, 12]}>
         {enabledCameras.map((cam) => (
-          <Col key={cam.id} span={cols}>
+          <Col key={cam.id} xs={24} md={cols}>
             <CameraCell cameraId={cam.id} title={cam.name || cam.id} profile={cam.profile} />
           </Col>
         ))}

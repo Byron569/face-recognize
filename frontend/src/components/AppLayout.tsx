@@ -1,13 +1,16 @@
+import { useState } from 'react';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Layout, Menu, Typography } from 'antd';
+import { Layout, Menu, Typography, Grid, Button } from 'antd';
 import {
   VideoCameraOutlined,
   UserOutlined,
   FileTextOutlined,
   SettingOutlined,
   DashboardOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import { menuConfig, themeConfig } from '../config';
 
@@ -31,6 +34,9 @@ const menuItems = menuConfig.map((entry) => ({
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.lg; // < 992px 视为移动端
+  const [collapsed, setCollapsed] = useState(false);
 
   const current = menuConfig.find((m) => m.key === location.pathname);
 
@@ -40,9 +46,19 @@ export default function AppLayout() {
         <Sider
           theme="dark"
           width={220}
+          collapsedWidth={isMobile ? 0 : 80}
+          breakpoint="lg"
+          collapsed={collapsed}
+          onBreakpoint={(broken) => setCollapsed(broken)}
+          onCollapse={(v) => setCollapsed(v)}
+          zeroWidthTriggerStyle={{ top: 56 }}
           style={{
-            boxShadow: '2px 0 8px rgba(0,0,0,0.15)',
-            zIndex: 10,
+            // 移动端:侧边栏悬浮抽屉式(展开覆盖内容,不挤压);桌面:正常文档流
+            position: isMobile ? 'fixed' : 'relative',
+            height: '100vh',
+            zIndex: 100,
+            boxShadow:
+              isMobile && !collapsed ? '2px 0 12px rgba(0,0,0,0.45)' : '2px 0 8px rgba(0,0,0,0.15)',
           }}
         >
           <div
@@ -65,7 +81,10 @@ export default function AppLayout() {
             mode="inline"
             selectedKeys={[location.pathname]}
             items={menuItems}
-            onClick={({ key }) => navigate(key)}
+            onClick={({ key }) => {
+              navigate(key);
+              if (isMobile) setCollapsed(true); // 手机上选完自动收起
+            }}
             style={{ marginTop: 8 }}
           />
         </Sider>
@@ -73,21 +92,29 @@ export default function AppLayout() {
           <Header
             style={{
               background: '#fff',
-              padding: '0 24px',
+              padding: '0 16px',
               height: 48,
               lineHeight: '48px',
               borderBottom: '1px solid #f0f0f0',
               display: 'flex',
               alignItems: 'center',
+              gap: 8,
             }}
           >
+            <Button
+              type="text"
+              size="small"
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => setCollapsed(!collapsed)}
+              style={{ fontSize: 16 }}
+            />
             <Text strong style={{ fontSize: 16, color: '#1a1a1a' }}>
               {current ? current.label : ''}
             </Text>
           </Header>
           <Content
             style={{
-              padding: 24,
+              padding: isMobile ? 8 : 24,
               background: '#f0f2f5',
               minHeight: 'calc(100vh - 48px)',
             }}

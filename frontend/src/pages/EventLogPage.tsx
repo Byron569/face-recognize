@@ -224,6 +224,7 @@ export default function EventLogPage() {
         dataSource={items}
         loading={isLoading}
         size="middle"
+        scroll={{ x: 820 }} // 手机小屏横向滚动,不挤压列宽
         pagination={{
           current: page,
           pageSize: 20,
