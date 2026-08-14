@@ -19,6 +19,10 @@ export const fetchEvents = (params: Record<string, unknown>) =>
   client.get<{ items: EventItem[]; total: number }>('/events', { params });
 export const acknowledgeEvent = (id: number) => client.post(`/events/${id}/acknowledge`);
 
+/** 批量删除事件记录(ids 传数组)。 */
+export const deleteEvents = (ids: number[]) =>
+  client.delete<{ deleted: number }>('/events', { params: { ids } });
+
 /** 事件类型枚举(用于筛选下拉框)。 */
 export const fetchEventTypes = () => client.get<{ types: string[] }>('/events/types');
 

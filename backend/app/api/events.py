@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from datetime import datetime
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,3 +52,15 @@ async def acknowledge_event(event_id: int, db: AsyncSession = Depends(get_db)):
     if not ok:
         raise HTTPException(404, "Event not found")
     return {"acknowledged": True}
+
+
+@router.delete("/events")
+async def delete_events(
+    ids: List[int] = Query(..., description="要删除的事件 id 列表(可重复传参,如 ?ids=1&ids=2)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除事件记录。"""
+    if not ids:
+        raise HTTPException(400, "ids 不能为空")
+    deleted = await EventService(db).delete_events(ids)
+    return {"deleted": deleted}

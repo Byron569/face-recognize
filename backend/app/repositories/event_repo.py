@@ -78,6 +78,14 @@ class EventRepository:
         await self.db.commit()
         return (result.rowcount or 0) > 0
 
+    async def delete_many(self, ids: list[int]) -> int:
+        """按 id 列表批量删除事件,返回删除条数。"""
+        if not ids:
+            return 0
+        result = await self.db.execute(delete(Event).where(Event.id.in_(ids)))
+        await self.db.commit()
+        return result.rowcount or 0
+
     async def cleanup(self, cutoff: datetime) -> int:
         r1 = await self.db.execute(delete(Event).where(Event.created_at < cutoff))
         r2 = await self.db.execute(delete(RecognitionLog).where(RecognitionLog.created_at < cutoff))

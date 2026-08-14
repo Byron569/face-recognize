@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Table, Tag, Select, Button, Space, message, Card, Badge } from 'antd';
-import { CheckCircleOutlined, WarningOutlined, UserSwitchOutlined, AlertOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { Table, Tag, Select, Button, Space, message, Card, Badge, Popconfirm } from 'antd';
+import { CheckCircleOutlined, WarningOutlined, UserSwitchOutlined, AlertOutlined, ClockCircleOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchEvents, acknowledgeEvent, EventItem } from '../api/events';
+import { fetchEvents, acknowledgeEvent, deleteEvents, EventItem } from '../api/events';
 import { eventMeta } from '../config';
 import dayjs from 'dayjs';
 
@@ -38,6 +38,23 @@ export default function EventLogPage() {
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
   });
+
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteEvents,
+    onSuccess: (res) => {
+      message.success(`已删除 ${res.data.deleted} 条记录`);
+      setSelectedRowKeys([]);
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    },
+    onError: (err: any) => message.error(err?.response?.data?.detail || '删除失败'),
+  });
+
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) return;
+    deleteMutation.mutate(selectedRowKeys.map(Number));
+  };
 
   const columns = [
     {
@@ -147,9 +164,29 @@ export default function EventLogPage() {
           ]}
         />
         <Tag color="blue">{total} 条记录</Tag>
+        <Popconfirm
+          title={`确定删除选中的 ${selectedRowKeys.length} 条记录吗?`}
+          description="删除后不可恢复"
+          okButtonProps={{ danger: true }}
+          onConfirm={handleBatchDelete}
+          disabled={selectedRowKeys.length === 0}
+        >
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            disabled={selectedRowKeys.length === 0}
+            loading={deleteMutation.isPending}
+          >
+            批量删除{selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          </Button>
+        </Popconfirm>
       </Space>
       <Table
         rowKey="id"
+        rowSelection={{
+          selectedRowKeys,
+          onChange: setSelectedRowKeys,
+        }}
         columns={columns}
         dataSource={items}
         loading={isLoading}

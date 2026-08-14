@@ -36,6 +36,10 @@ class EventService:
     async def acknowledge(self, event_id: int) -> bool:
         return await self._repo.acknowledge(event_id)
 
+    async def delete_events(self, ids: list[int]) -> int:
+        """批量删除事件,返回删除条数。"""
+        return await self._repo.delete_many(ids)
+
     async def cleanup(self, retention_days: int) -> int:
         from datetime import timedelta, timezone
 
