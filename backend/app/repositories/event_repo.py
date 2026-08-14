@@ -86,6 +86,24 @@ class EventRepository:
         await self.db.commit()
         return result.rowcount or 0
 
+    async def delete_filtered(
+        self,
+        event_type: Optional[EventType] = None,
+        camera_id: Optional[str] = None,
+        acknowledged: Optional[bool] = None,
+    ) -> int:
+        """按筛选条件删除全部匹配事件(用于「清空/删除全部」)。"""
+        q = delete(Event)
+        if event_type:
+            q = q.where(Event.event_type == event_type)
+        if camera_id:
+            q = q.where(Event.camera_id == camera_id)
+        if acknowledged is not None:
+            q = q.where(Event.acknowledged == acknowledged)
+        result = await self.db.execute(q)
+        await self.db.commit()
+        return result.rowcount or 0
+
     async def cleanup(self, cutoff: datetime) -> int:
         r1 = await self.db.execute(delete(Event).where(Event.created_at < cutoff))
         r2 = await self.db.execute(delete(RecognitionLog).where(RecognitionLog.created_at < cutoff))

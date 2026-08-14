@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from datetime import datetime
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,11 +55,24 @@ async def acknowledge_event(event_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/events")
 async def delete_events(
-    ids: List[int] = Query(..., description="要删除的事件 id 列表(可重复传参,如 ?ids=1&ids=2)"),
+    ids: str | None = Query(None, description="逗号分隔的事件 id,如 ids=1,2,3"),
+    all: bool = Query(False, description="删除当前筛选条件下的全部记录(与 ids 二选一)"),
+    event_type: str | None = Query(None),
+    camera_id: str | None = Query(None),
+    acknowledged: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """批量删除事件记录。"""
-    if not ids:
-        raise HTTPException(400, "ids 不能为空")
-    deleted = await EventService(db).delete_events(ids)
+    """批量删除事件记录。
+
+    - 指定 ids:删除指定 id(逗号分隔)
+    - all=true:删除 event_type/camera_id/acknowledged 筛选条件下的全部
+    """
+    svc = EventService(db)
+    if all:
+        deleted = await svc.delete_events_filtered(event_type, camera_id, acknowledged)
+    elif ids:
+        id_list = [int(x) for x in ids.split(",") if x.strip()]
+        deleted = await svc.delete_events(id_list)
+    else:
+        raise HTTPException(422, "ids 或 all=true 至少提供一个")
     return {"deleted": deleted}

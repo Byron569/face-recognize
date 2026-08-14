@@ -19,9 +19,13 @@ export const fetchEvents = (params: Record<string, unknown>) =>
   client.get<{ items: EventItem[]; total: number }>('/events', { params });
 export const acknowledgeEvent = (id: number) => client.post(`/events/${id}/acknowledge`);
 
-/** 批量删除事件记录(ids 传数组)。 */
+/** 批量删除事件记录(ids 逗号分隔,避免 axios 数组序列化问题)。 */
 export const deleteEvents = (ids: number[]) =>
-  client.delete<{ deleted: number }>('/events', { params: { ids } });
+  client.delete<{ deleted: number }>('/events', { params: { ids: ids.join(',') } });
+
+/** 删除当前筛选条件下的全部事件。 */
+export const deleteAllEvents = (filters: { event_type?: string; acknowledged?: boolean }) =>
+  client.delete<{ deleted: number }>('/events', { params: { all: true, ...filters } });
 
 /** 事件类型枚举(用于筛选下拉框)。 */
 export const fetchEventTypes = () => client.get<{ types: string[] }>('/events/types');

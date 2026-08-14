@@ -40,6 +40,16 @@ class EventService:
         """批量删除事件,返回删除条数。"""
         return await self._repo.delete_many(ids)
 
+    async def delete_events_filtered(
+        self,
+        event_type: Optional[str] = None,
+        camera_id: Optional[str] = None,
+        acknowledged: Optional[bool] = None,
+    ) -> int:
+        """按筛选条件删除全部匹配事件。"""
+        et = EventType(event_type) if event_type else None
+        return await self._repo.delete_filtered(et, camera_id, acknowledged)
+
     async def cleanup(self, retention_days: int) -> int:
         from datetime import timedelta, timezone
 
