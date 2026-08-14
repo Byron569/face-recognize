@@ -40,6 +40,15 @@ class FaceService:
         cfg = VisionConfig.from_dict(build_camera_config(profile).get("vision", {}))
         return self._engine_pool.get(cfg)
 
+    async def detect_faces(self, image_bgr: np.ndarray) -> list[dict]:
+        """预览检测:返回全部人脸框与置信度(不入库、不做质量筛选,GPU 推理)。"""
+        engine = self._engine_for()
+        faces = engine.detect(image_bgr)
+        return [
+            {"bbox": [float(v) for v in f.bbox], "det_score": float(f.det_score)}
+            for f in faces
+        ]
+
     async def extract_embedding(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
         """从图片提取最大脸的 512-d 归一化 embedding(带注册质量筛选)。
 

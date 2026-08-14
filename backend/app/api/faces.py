@@ -41,6 +41,19 @@ async def _extract_embedding(image: UploadFile, svc: FaceService) -> List[float]
     return embedding.astype(np.float32).ravel().tolist()
 
 
+@router.post("/faces/detect")
+async def detect_faces(image: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    """上传照片预览检测:返回图片尺寸与人脸框坐标(不入库,GPU 推理)。
+
+    供前端注册弹窗在预览图上绘制检测框;不包含注册质量筛选。
+    """
+    svc = _get_service(db)
+    img = _decode_image(await image.read())
+    h, w = img.shape[:2]
+    faces = await svc.detect_faces(img)
+    return {"width": w, "height": h, "faces": faces}
+
+
 @router.get("/faces", response_model=IdentityListOut)
 async def list_faces(page: int = 1, page_size: int = 20, search: str = "", db: AsyncSession = Depends(get_db)):
     svc = _get_service(db)

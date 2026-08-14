@@ -18,6 +18,16 @@ export const addFaceEmbedding = (id: string, formData: FormData) =>
 export const createFace = (formData: FormData) =>
   client.post('/faces', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
 
+/** 上传照片预览检测:返回图片尺寸与人脸框坐标(不入库,GPU 推理)。 */
+export const detectFace = (formData: FormData) =>
+  client.post<{
+    width: number;
+    height: number;
+    faces: Array<{ bbox: number[]; det_score: number }>;
+  }>('/faces/detect', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
 /** 图片识别搜索(返回最匹配的身份)。 */
 export const searchFace = (formData: FormData) =>
   client.post<{ identity_id: string | null; name: string | null; similarity: number }>('/faces/search', formData, {
