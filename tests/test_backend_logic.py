@@ -120,4 +120,32 @@ def test_recognition_task_cooldown_logic():
     assert effective == 300 + 3 * 90
 
 
+def test_recognition_task_limits_attempts_even_when_unknown():
+    """max_per_frame 限流:识别为 Unknown(也执行了底库比对)同样计入次数。"""
+    from backend.app.tasks.builtin.face_recognition_task import FaceRecognitionTask
+    from vision.events import PipelineContext, TrackResult
+
+    class FakeGallery:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, threshold):
+            self.calls += 1
+            return None  # 全部 Unknown
+
+    g = FakeGallery()
+    task = FaceRecognitionTask(config={"max_per_frame": 1}, full_config={}, gallery=g, tracker=None)
+    ctx = PipelineContext(
+        camera_id="c0",
+        frame_id=10,
+        frame=None,
+        tracks=[
+            TrackResult(track_id=1, bbox=(0, 0, 10, 10), embedding=[0.1] * 512),
+            TrackResult(track_id=2, bbox=(20, 20, 30, 30), embedding=[0.2] * 512),
+        ],
+    )
+    task.run(None, ctx)
+    assert g.calls == 1, f"expected 1 gallery search (rate-limited), got {g.calls}"
+
+
 import os  # noqa: E402

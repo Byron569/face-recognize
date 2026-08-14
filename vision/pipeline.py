@@ -59,6 +59,8 @@ class VisionPipeline(threading.Thread):
         self._running = False
         self._frame_id = 0
         self._started_at: Optional[float] = None
+        self._fps = 0.0                  # 滚动帧率(EMA 平滑)
+        self._last_proc_ts = 0.0
 
         # 阶段耗时滚动平均(监控用)
         self._stage_ms = {
@@ -106,16 +108,26 @@ class VisionPipeline(threading.Thread):
         logger.info("[vision] pipeline %s stopped (frames=%s)", self.camera_id, self._frame_id)
 
     def _process_frame(self, frame) -> None:
-        # 1. 检测(降频)
+        # 0. 滚动帧率(处理吞吐,EMA 平滑;封顶 60 —— 文件源解码无节流会虚高)
+        now = time.perf_counter()
+        if self._last_proc_ts > 0:
+            dt = now - self._last_proc_ts
+            if dt > 0:
+                inst = 1.0 / dt
+                self._fps = min(self._fps * 0.9 + inst * 0.1, 60.0)
+        self._last_proc_ts = now
+
+        # 1. 检测(降频);非检测帧只做跟踪预测,不判定丢失
         t0 = time.perf_counter()
-        detections = []
         if self._frame_id % self._config.det_interval == 0:
             detections = self._engine.detect(frame)
+            tracks = self._tracker.update(detections, self._frame_id)
+        else:
+            tracks = self._tracker.skip(self._frame_id)
         self._record_stage("detect", time.perf_counter() - t0)
 
         # 2. 跟踪
         t0 = time.perf_counter()
-        tracks = self._tracker.update(detections, self._frame_id)
         self._record_stage("track", time.perf_counter() - t0)
 
         # 3. 可插拔任务
@@ -178,6 +190,7 @@ class VisionPipeline(threading.Thread):
             "camera_id": self.camera_id,
             "alive": self.is_alive(),
             "frames": self._frame_id,
+            "fps": round(self._fps, 1),
             "tracks": self._tracker.active_count,
             "uptime_seconds": int(time.time() - self._started_at) if self._started_at else 0,
             "stage_ms": {k: round(v, 1) for k, v in stages.items()},

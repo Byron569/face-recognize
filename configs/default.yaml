@@ -25,7 +25,7 @@ storage:
 stream:
   max_height: 480          # 推流前缩放最大高度(px)
   jpeg_quality: 70         # JPEG 质量 [1,100]
-  push_fps: 10             # 推流帧率上限
+  push_fps: 15             # 推流帧率上限(编码在独立线程,不阻塞事件循环)
 
 # ── InsightFace 视觉内核(推理默认 GPU)───────────────────────
 vision:

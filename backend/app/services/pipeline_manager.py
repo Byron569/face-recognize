@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import queue
 import threading
 import time
 from collections import defaultdict
@@ -54,6 +55,11 @@ class PipelineManager:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._last_frames: Dict[str, Any] = {}
         self._stream_max_height: Dict[str, int] = {}  # per-camera 推流最大高度(0=不缩放)
+        # 编码线程池:每摄像头一个编码线程(CPU 密集) + 单槽位队列(丢旧帧),
+        # 事件循环只做 WS 发送,避免编码阻塞推流/心跳/落库
+        self._encode_queues: Dict[str, queue.Queue] = {}
+        self._encode_threads: Dict[str, threading.Thread] = {}
+        self._encode_stops: Dict[str, threading.Event] = {}
         self._gallery = FaceGallery()
         self._engine_pool: EnginePool = get_engine_pool()
         self._gallery_loaded = False
@@ -117,8 +123,22 @@ class PipelineManager:
 
         # 3. 组装流水线(帧/事件回调桥接到 asyncio loop)
         loop = self._loop
-        push_every = max(1, int(stream_cfg.get("push_fps", 10)))
+        push_every = max(1, int(stream_cfg.get("push_fps", 15)))
         last_push: Dict[str, float] = {}
+
+        # 编码线程(单槽位队列,满则丢旧帧 —— 监控只需最新帧)
+        enc_q: queue.Queue = queue.Queue(maxsize=1)
+        stop_evt = threading.Event()
+        self._encode_queues[camera_id] = enc_q
+        self._encode_stops[camera_id] = stop_evt
+        enc_thread = threading.Thread(
+            target=self._encode_loop,
+            args=(camera_id, enc_q, stop_evt, loop),
+            daemon=True,
+            name=f"encode-{camera_id}",
+        )
+        enc_thread.start()
+        self._encode_threads[camera_id] = enc_thread
 
         def _throttled_push(context) -> None:
             if loop is None or not loop.is_running():
@@ -127,11 +147,26 @@ class PipelineManager:
             if now - last_push.get(camera_id, 0.0) < 1.0 / push_every:
                 return
             last_push[camera_id] = now
+            with self._lock:
+                has_viewers = bool(self._ws_connections.get(camera_id))
+            if not has_viewers:
+                return  # 无订阅者:不编码,省 CPU
             frame_copy = context.frame.copy()
+            self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧
             persons = [t.to_dict() for t in context.tracks]
-            asyncio.run_coroutine_threadsafe(
-                self._push_frame(camera_id, frame_copy, persons, context.frame_id), loop
-            )
+            item = (frame_copy, persons, context.frame_id)
+            try:
+                enc_q.put_nowait(item)
+            except queue.Full:
+                # 单槽位:丢弃旧帧,保留最新
+                try:
+                    enc_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    enc_q.put_nowait(item)
+                except queue.Full:
+                    pass
 
         def _handle_event(evt) -> None:
             if loop is None or not loop.is_running():
@@ -166,6 +201,14 @@ class PipelineManager:
         with self._lock:
             pipeline = self._pipelines.pop(camera_id, None)
             self._stream_max_height.pop(camera_id, None)
+        # 停止编码线程(唤醒 + join,避免线程泄漏)
+        stop_evt = self._encode_stops.pop(camera_id, None)
+        enc_thread = self._encode_threads.pop(camera_id, None)
+        self._encode_queues.pop(camera_id, None)
+        if stop_evt is not None:
+            stop_evt.set()
+        if enc_thread is not None:
+            enc_thread.join(timeout=2.0)
         if pipeline is None:
             return False
         pipeline.close(timeout=5.0)
@@ -202,36 +245,57 @@ class PipelineManager:
     def unregister_event_listener(self, ws: WebSocket) -> None:
         self._event_listeners.discard(ws)
 
-    # ── 帧推送(在 asyncio loop 内执行)────────────────────
+    # ── 帧推送:编码在线程池,发送在事件循环 ────────────────
 
-    async def _push_frame(self, camera_id: str, frame, persons: list, frame_id: int) -> None:
-        from ..config import get_settings
+    def _encode_loop(self, camera_id: str, enc_q: queue.Queue, stop_evt: threading.Event, loop) -> None:
+        """编码线程:取最新帧 → 缩放 → JPEG → base64 → 桥回事件循环发送。
 
-        settings = get_settings()
-        self._last_frames[camera_id] = frame
-
+        独立线程使多摄像头编码互不阻塞;单槽位队列保证只处理最新帧。
+        """
         import base64
 
         import cv2
 
-        h = frame.shape[0]
-        push_max_height = self._stream_max_height.get(camera_id, settings.stream_max_height)
-        if push_max_height > 0 and h > push_max_height:
-            scale = push_max_height / h
-            frame = cv2.resize(frame, (int(frame.shape[1] * scale), int(frame.shape[0] * scale)))
-        ret, buf = cv2.imencode(
-            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, settings.stream_jpeg_quality]
-        )
-        if not ret:
-            return
-        b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        from ..config import get_settings
 
+        settings = get_settings()
+        while not stop_evt.is_set():
+            try:
+                item = enc_q.get(timeout=0.3)
+            except queue.Empty:
+                continue
+            frame, persons, frame_id = item
+            try:
+                h = frame.shape[0]
+                push_max_height = self._stream_max_height.get(camera_id, settings.stream_max_height)
+                if push_max_height > 0 and h > push_max_height:
+                    scale = push_max_height / h
+                    frame = cv2.resize(
+                        frame, (int(frame.shape[1] * scale), int(frame.shape[0] * scale))
+                    )
+                ret, buf = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, settings.stream_jpeg_quality]
+                )
+                if not ret:
+                    continue
+                b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            except Exception:  # noqa: BLE001
+                continue
+            if loop is None or not loop.is_running():
+                continue
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_frame(camera_id, b64, persons, frame_id), loop
+                )
+            except Exception:  # noqa: BLE001
+                continue
+
+    async def _send_frame(self, camera_id: str, b64: str, persons: list, frame_id: int) -> None:
+        """事件循环内执行:只做 WS 发送(纯异步 I/O)。"""
         frame_msg = json.dumps(
             {"type": "frame", "data": b64, "timestamp": time.time(), "frame_id": frame_id}
         )
-        det_msg = json.dumps(
-            {"type": "detections", "frame_id": frame_id, "persons": persons}
-        )
+        det_msg = json.dumps({"type": "detections", "frame_id": frame_id, "persons": persons})
 
         with self._lock:
             ws_set = list(self._ws_connections.get(camera_id, ()))

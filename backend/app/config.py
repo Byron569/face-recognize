@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     event_retention_days: int = 30
     cleanup_cron_hour: int = 3
 
+    # CORS 白名单(环境变量 AIM_CORS_ORIGINS,JSON 数组格式;
+    # 生产同源部署(nginx 反代)无需跨域,保持默认即可)
+    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
     model_config = {"env_file": ".env", "env_prefix": "AIM_", "extra": "ignore"}
 
 

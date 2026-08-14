@@ -125,7 +125,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.model_dump().get("cors_origins", ["*"]),
+    allow_origins=settings.cors_origins,  # 白名单;不再使用 ["*"] + credentials 的回显组合
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

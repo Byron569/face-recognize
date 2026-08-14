@@ -299,7 +299,6 @@ class ByteTracker:
 
     def update(self, detections: List[FaceResult], frame_id: int) -> List[TrackResult]:
         self._frame_id += 1
-
         # 1. 预测全部存活轨迹
         for t in self._tracked + self._lost:
             t.predict()
@@ -336,6 +335,7 @@ class ByteTracker:
 
         # 4. 第二次关联:低分检测 × 第一次未匹配的"已确认"轨迹
         r_tracked = [strack_pool[i] for i in u_track if strack_pool[i].state == _TrackState.TRACKED]
+        rescued: set = set()  # 本帧被低分框救回的轨迹,第 5 步不得再标丢失
         if dets_low:
             cost2 = _iou_distance(r_tracked, dets_low)
             matches2, _, _ = _linear_assignment(cost2, thresh=0.5)
@@ -345,10 +345,13 @@ class ByteTracker:
                 if emb is not None:
                     track.embedding = emb
                 track.update(tlwh, score, self._frame_id)
+                rescued.add(track)
 
         # 5. 第一次未匹配的轨迹 → 进入 lost(降频检测下 NEW 也保留确认机会,超时删除)
         for i in u_track:
             track = strack_pool[i]
+            if track in rescued:
+                continue
             if track.state != _TrackState.LOST:
                 track.mark_lost()
 
@@ -390,6 +393,17 @@ class ByteTracker:
 
     def _active_count(self) -> int:
         return len(self._tracked) + len(self._lost)
+
+    def skip(self, frame_id: int) -> List[TrackResult]:
+        """未检测帧:只做卡尔曼预测,不关联、不判定丢失。
+
+        配合 pipeline 的 det_interval 降频使用 —— 空检测不能当作"全部丢失",
+        否则已确认轨迹的 tracklet_len/身份状态会每两帧被 re_activate 重置。
+        """
+        self._frame_id += 1
+        for t in self._tracked + self._lost:
+            t.predict()
+        return self.snapshot()
 
     # ── 快照与身份写回 ────────────────────────────────────
 

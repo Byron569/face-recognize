@@ -80,16 +80,18 @@ class FaceRecognitionTask(VisionTask):
         for track in context.tracks:
             if processed >= self._max_per_frame:
                 break
-            event = self._maybe_recognize(track, context)
+            event, attempted = self._maybe_recognize(track, context)
+            if attempted:
+                processed += 1  # 无论是否命中,实际比对都计入限流
             if event is not None:
                 events.append(event)
-                processed += 1
 
         return events
 
     # ── 识别调度 ──────────────────────────────────────────
 
-    def _maybe_recognize(self, track, context: PipelineContext) -> Optional[VisionEvent]:
+    def _maybe_recognize(self, track, context: PipelineContext) -> tuple[Optional[VisionEvent], bool]:
+        """尝试识别一个 track。返回 (event, attempted):attempted=True 表示本帧实际执行了底库比对。"""
         st = self._states.get(track.track_id)
         if st is None:
             st = self._states[track.track_id] = _TrackRecState()
@@ -102,16 +104,16 @@ class FaceRecognitionTask(VisionTask):
             if st.identity == "Unknown":
                 effective = rec_cfg.cooldown_frames + st.fail_count * rec_cfg.failed_backoff_frames
                 if rec_cfg.max_attempts > 0 and st.fail_count >= rec_cfg.max_attempts:
-                    return None
+                    return None, False
                 if frame_id - st.last_attempt_frame < effective:
-                    return None
+                    return None, False
             else:
                 if frame_id - st.last_success_frame < rec_cfg.recognized_cooldown_frames:
-                    return None
+                    return None, False
 
         embedding = self._latest_embedding(track)
         if embedding is None:
-            return None
+            return None, False
 
         t0 = time.perf_counter()
         hit = self._gallery.search(np.asarray(embedding, dtype=np.float32), rec_cfg.threshold)
@@ -125,7 +127,7 @@ class FaceRecognitionTask(VisionTask):
             # 写回跟踪器,保证前端始终拿到最新身份状态
             if self._tracker:
                 self._tracker.set_identity(track.track_id, "Unknown", 0.0)
-            return None
+            return None, True  # 执行了比对,计入限流
 
         st.fail_count = 0
         st.last_success_frame = frame_id
@@ -141,18 +143,21 @@ class FaceRecognitionTask(VisionTask):
             "[recognition] camera=%s track=%s name=%s sim=%.3f (%.1fms)",
             context.camera_id, track.track_id, name, similarity, latency_ms,
         )
-        return VisionEvent(
-            event_type="recognition",
-            camera_id=context.camera_id,
-            track_id=track.track_id,
-            confidence=similarity,
-            payload={
-                "identity_id": identity_id,
-                "name": name,
-                "similarity": similarity,
-                "latency_ms": round(latency_ms, 2),
-                "changed": changed,
-            },
+        return (
+            VisionEvent(
+                event_type="recognition",
+                camera_id=context.camera_id,
+                track_id=track.track_id,
+                confidence=similarity,
+                payload={
+                    "identity_id": identity_id,
+                    "name": name,
+                    "similarity": similarity,
+                    "latency_ms": round(latency_ms, 2),
+                    "changed": changed,
+                },
+            ),
+            True,
         )
 
     @staticmethod

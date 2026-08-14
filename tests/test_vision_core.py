@@ -3,7 +3,7 @@
 from vision.config import TrackConfig, VisionConfig
 from vision.events import FaceResult, PipelineContext, TrackResult, VisionEvent
 from vision.tasks import VisionTask
-from vision.tracker import ByteTracker
+from vision.tracker import ByteTracker, _TrackState
 
 
 def _face(x1, y1, x2, y2, score=0.9):
@@ -60,6 +60,27 @@ def test_tracker_second_association_for_low_score():
     snap = tracker.update([_face(1, 1, 51, 51, score=0.3)], 2)
     assert len(snap) == 1
     assert snap[0].track_id == 1
+
+
+def test_tracker_rescued_track_not_marked_lost():
+    """修复:低分框救回的轨迹当帧不得被标丢失(第 5 步跳过 rescued)。"""
+    tracker = ByteTracker(TrackConfig(min_hits=1))
+    tracker.update([_face(0, 0, 50, 50, score=0.9)], 1)
+    tracker.update([_face(1, 1, 51, 51, score=0.3)], 2)
+    t = tracker.get(1)
+    assert t is not None
+    assert t.state == _TrackState.TRACKED, "rescued track must stay TRACKED, got LOST"
+
+
+def test_tracker_skip_keeps_hits_and_state():
+    """修复:未检测帧只 predict,不判定丢失、不重置 hits。"""
+    tracker = ByteTracker(TrackConfig(min_hits=1))
+    tracker.update([_face(0, 0, 50, 50)], 1)
+    snap = tracker.skip(2)  # 模拟 det_interval 跳过的帧
+    assert len(snap) == 1
+    assert snap[0].hits == 1, "hits must not change on skip frames"
+    t = tracker.get(1)
+    assert t.state == _TrackState.TRACKED, "track must not go LOST on skip frames"
 
 
 def test_tracker_re_activate_after_occlusion():
