@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Table, Tag, Select, Button, Space, message, Card, Badge, Popconfirm } from 'antd';
+import { Table, Tag, Select, Button, Space, message, Card, Badge, Popconfirm, Grid } from 'antd';
 import { CheckCircleOutlined, WarningOutlined, UserSwitchOutlined, AlertOutlined, ClockCircleOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchEvents, acknowledgeEvent, deleteEvents, deleteAllEvents, EventItem } from '../api/events';
@@ -19,6 +19,8 @@ export default function EventLogPage() {
   const [typeFilter, setTypeFilter] = useState<string | undefined>();
   const [ackFilter, setAckFilter] = useState<boolean | undefined>(false);
   const queryClient = useQueryClient();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
 
   const { data, isLoading } = useQuery({
     queryKey: ['events', page, typeFilter, ackFilter],
@@ -160,18 +162,18 @@ export default function EventLogPage() {
 
   return (
     <Card bordered={false} style={{ borderRadius: 8 }}>
-      <Space style={{ marginBottom: 16 }} size="middle">
+      <Space style={{ marginBottom: 16 }} size="middle" wrap>
         <Select
           placeholder="全部类型"
           allowClear
-          style={{ width: 150 }}
+          style={{ width: isMobile ? 110 : 150 }}
           value={typeFilter}
           onChange={setTypeFilter}
           options={Object.entries(eventMeta).map(([k, v]) => ({ value: k, label: v.label }))}
         />
         <Select
           placeholder="确认状态"
-          style={{ width: 120 }}
+          style={{ width: isMobile ? 100 : 120 }}
           value={ackFilter}
           onChange={setAckFilter}
           options={[

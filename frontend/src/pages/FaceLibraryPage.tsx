@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Row, Col, Button, Input, Modal, message, Avatar, Tag, Space, Upload, Result, Descriptions } from 'antd';
+import { Card, Row, Col, Button, Input, Modal, message, Avatar, Tag, Space, Upload, Result, Descriptions, Grid } from 'antd';
 import { PlusOutlined, DeleteOutlined, SearchOutlined, UserOutlined, EditOutlined, UploadOutlined, ScanOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchFaces, deleteFace, batchImportFaces, searchFace, Identity } from '../api/faces';
@@ -21,6 +21,8 @@ export default function FaceLibraryPage() {
   const [searchFile, setSearchFile] = useState<any>(null);
   const [searchResult, setSearchResult] = useState<{ identity_id: string | null; name: string | null; similarity: number } | null>(null);
   const queryClient = useQueryClient();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md; // < 768px 视为手机
 
   const { data, isLoading } = useQuery({
     queryKey: ['faces', page, search],
@@ -57,26 +59,26 @@ export default function FaceLibraryPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ marginBottom: 20, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 200px', minWidth: 0 }}>
           <Input
             placeholder="搜索姓名"
             prefix={<SearchOutlined />}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             allowClear
-            style={{ width: 260 }}
+            style={{ flex: 1, minWidth: 120 }}
           />
           <Tag color="blue">{total} 人</Tag>
         </div>
-        <Space>
-          <Button icon={<ScanOutlined />} onClick={() => { setSearchOpen(true); setSearchResult(null); setSearchFile(null); }} size="large">
+        <Space wrap>
+          <Button icon={<ScanOutlined />} onClick={() => { setSearchOpen(true); setSearchResult(null); setSearchFile(null); }} size={isMobile ? 'middle' : 'large'}>
             图片识别
           </Button>
-          <Button icon={<UploadOutlined />} onClick={() => { setBatchOpen(true); setBatchResult(null); setBatchFiles([]); setBatchName(''); }} size="large">
+          <Button icon={<UploadOutlined />} onClick={() => { setBatchOpen(true); setBatchResult(null); setBatchFiles([]); setBatchName(''); }} size={isMobile ? 'middle' : 'large'}>
             批量导入
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)} size="large">
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)} size={isMobile ? 'middle' : 'large'}>
             注册新人脸
           </Button>
         </Space>
