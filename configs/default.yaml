@@ -58,6 +58,10 @@ vision:
     log_to_db: true                # 识别结果写入 recognition_logs
     event_to_db: true              # 识别事件写入 events 表
 
+  registration:                    # 注册/追加特征质量筛选(仅注册路径生效,避免低质量 embedding 入库)
+    min_face_size: 48              # 人脸框最短边(px),低于此拒绝
+    min_det_score: 0.6             # 检测置信度下限(实时推理 det_thresh=0.5,注册要求更高)
+
 # ── 可插拔任务(不写死: 启用/禁用 + 实现路径均可配置)─────────
 tasks:
   face_recognition:

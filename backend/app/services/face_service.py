@@ -41,13 +41,33 @@ class FaceService:
         return self._engine_pool.get(cfg)
 
     async def extract_embedding(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
-        """从图片提取最大脸的 512-d 归一化 embedding。"""
+        """从图片提取最大脸的 512-d 归一化 embedding(带注册质量筛选)。
+
+        只接受:检测置信度 ≥ min_det_score 且人脸框最短边 ≥ min_face_size 的人脸,
+        防止低质量 embedding(小脸/模糊/低置信度)污染底库。
+        """
         engine = self._engine_for()
         faces = engine.detect(image_bgr)
         if not faces:
             return None
-        largest = max(faces, key=lambda f: f.width * f.height)
+        reg = self._registration_cfg()
+        min_size = int(reg.get("min_face_size", 48))
+        min_score = float(reg.get("min_det_score", 0.0))
+        candidates = [
+            f for f in faces
+            if f.det_score >= min_score and min(f.width, f.height) >= min_size
+        ]
+        if not candidates:
+            return None
+        largest = max(candidates, key=lambda f: f.width * f.height)
         return largest.embedding
+
+    def _registration_cfg(self) -> dict:
+        """注册质量筛选配置(来自 default/profile 级联的 vision.registration 节)。"""
+        from ..config import build_camera_config
+
+        vision_cfg = build_camera_config("desktop").get("vision", {}) or {}
+        return vision_cfg.get("registration", {}) or {}
 
     # ── 身份 CRUD ─────────────────────────────────────────
 

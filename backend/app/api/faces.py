@@ -37,7 +37,7 @@ async def _extract_embedding(image: UploadFile, svc: FaceService) -> List[float]
     img = _decode_image(await image.read())
     embedding = await svc.extract_embedding(img)
     if embedding is None:
-        raise HTTPException(400, "No face detected in image")
+        raise HTTPException(400, "未检测到合格人脸(需足够大且置信度达标,请换一张清晰的正脸照)")
     return embedding.astype(np.float32).ravel().tolist()
 
 
@@ -136,6 +136,7 @@ async def search_face(image: UploadFile = File(...), db: AsyncSession = Depends(
 @router.post("/faces/batch-import")
 async def batch_import(
     name: str = Form(...),
+    notes: str = Form(""),
     images: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -148,7 +149,7 @@ async def batch_import(
             img = _decode_image(await img_file.read())
             emb = await svc.extract_embedding(img)
             if emb is None:
-                results.append({"file": img_file.filename, "status": "error", "reason": "No face detected"})
+                results.append({"file": img_file.filename, "status": "error", "reason": "未检测到合格人脸(过小/模糊/置信度低)"})
                 continue
             embeddings.append(emb.astype(np.float32).ravel().tolist())
             results.append({"file": img_file.filename, "status": "ok"})
@@ -161,7 +162,7 @@ async def batch_import(
         from ..models.identity import Identity
         from ..repositories.identity_repo import IdentityRepository
 
-        identity = await IdentityRepository(db).create(Identity(name=name), embeddings=embeddings)
+        identity = await IdentityRepository(db).create(Identity(name=name, notes=notes), embeddings=embeddings)
         await svc._refresh_gallery()
         identity_id = str(identity.id)
     else:
