@@ -93,7 +93,7 @@ async def start_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
     config = build_camera_config(camera.profile, camera.config)
 
     mgr = get_pipeline_manager()
-    if camera_id in mgr.list_cameras():
+    if mgr.is_running(camera_id):
         return {"started": True, "status": "already_running"}
 
     try:
@@ -107,6 +107,8 @@ async def start_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/cameras/{camera_id}/stop")
 async def stop_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
+    if not await CameraService(db).get(camera_id):
+        raise HTTPException(404, "Camera not found")
     mgr = get_pipeline_manager()
     stopped = await mgr.stop_camera(camera_id)
     await CameraService(db).update(camera_id, {"enabled": False})

@@ -7,7 +7,7 @@ from typing import List
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import resolve_project_path
@@ -55,7 +55,12 @@ async def detect_faces(image: UploadFile = File(...), db: AsyncSession = Depends
 
 
 @router.get("/faces", response_model=IdentityListOut)
-async def list_faces(page: int = 1, page_size: int = 20, search: str = "", db: AsyncSession = Depends(get_db)):
+async def list_faces(
+    page: int = Query(1, ge=1, description="页码,从 1 起"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数,上限 200"),
+    search: str = "",
+    db: AsyncSession = Depends(get_db),
+):
     svc = _get_service(db)
     identities, total = await svc.list_identities(page, page_size, search)
     items = [
@@ -154,6 +159,8 @@ async def batch_import(
     db: AsyncSession = Depends(get_db),
 ):
     """同一人批量导入多张照片,每张提取一条 embedding。"""
+    if len(images) > 32:
+        raise HTTPException(422, "单次批量导入最多 32 张图片")
     svc = _get_service(db)
     results = []
     embeddings = []
@@ -176,7 +183,7 @@ async def batch_import(
         from ..repositories.identity_repo import IdentityRepository
 
         identity = await IdentityRepository(db).create(Identity(name=name, notes=notes), embeddings=embeddings)
-        await svc._refresh_gallery()
+        await svc.refresh_gallery()
         identity_id = str(identity.id)
     else:
         identity_id = None
@@ -186,20 +193,34 @@ async def batch_import(
 
 # ── 头像 ─────────────────────────────────────────────────
 
+ALLOWED_AVATAR_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_AVATAR_BYTES = 5 * 1024 * 1024  # 5MB
+
+
 @router.post("/faces/{face_id}/avatar")
 async def upload_avatar(face_id: uuid_mod.UUID, image: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    svc = _get_service(db)
+    identity = await svc.get_identity(face_id)
+    if not identity:
+        raise HTTPException(404, "Identity not found")
+
+    ext = os.path.splitext(image.filename or "avatar.jpg")[1].lower() or ".jpg"
+    if ext not in ALLOWED_AVATAR_EXTS:
+        raise HTTPException(400, f"不支持的图片类型: {ext},仅允许 {'/'.join(sorted(ALLOWED_AVATAR_EXTS))}")
+
+    data = await image.read()
+    if len(data) > MAX_AVATAR_BYTES:
+        raise HTTPException(400, "图片超过 5MB 上限")
+    _decode_image(data)  # 复用现有校验:非法图片会抛 400
+
     avatars_dir = resolve_project_path("face_db/avatars")
     os.makedirs(avatars_dir, exist_ok=True)
-
-    ext = os.path.splitext(image.filename or "avatar.jpg")[1] or ".jpg"
     filename = f"{face_id}_{uuid_mod.uuid4().hex[:8]}{ext}"
     filepath = os.path.join(avatars_dir, filename)
     with open(filepath, "wb") as f:
-        f.write(await image.read())
+        f.write(data)
 
-    identity = await _get_service(db).update_identity(face_id, {"avatar_path": f"face_db/avatars/{filename}"})
-    if not identity:
-        raise HTTPException(404, "Identity not found")
+    identity = await svc.update_identity(face_id, {"avatar_path": f"face_db/avatars/{filename}"})
     return {"avatar_path": identity.avatar_path}
 
 
@@ -207,7 +228,12 @@ async def upload_avatar(face_id: uuid_mod.UUID, image: UploadFile = File(...), d
 
 @router.post("/faces/import-pickle")
 async def import_pickle(body: dict, db: AsyncSession = Depends(get_db)):
-    """从旧版 pickle 底库导入(兼容历史数据,导入后可删除 pickle 文件)。"""
-    pickle_path = body.get("path", "face_db/identities.pkl")
-    count = await _get_service(db).import_pickle(pickle_path)
+    """从旧版 pickle 底库导入(仅允许 face_db/ 目录下的 .pkl 文件)。"""
+    pickle_path = str(body.get("path", "face_db/identities.pkl"))
+    if not pickle_path.endswith(".pkl"):
+        raise HTTPException(400, "仅支持 .pkl 文件")
+    try:
+        count = await _get_service(db).import_pickle(pickle_path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"imported": count}

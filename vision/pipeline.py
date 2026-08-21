@@ -12,6 +12,8 @@ vision.pipeline — 单摄像头处理线程(工业化主循环)。
 
 from __future__ import annotations
 
+from collections import deque
+
 import logging
 import threading
 import time
@@ -59,8 +61,8 @@ class VisionPipeline(threading.Thread):
         self._running = False
         self._frame_id = 0
         self._started_at: Optional[float] = None
-        self._fps = 0.0                  # 滚动帧率(EMA 平滑)
-        self._last_proc_ts = 0.0
+        self._proc_ts: deque = deque()          # 最近处理帧时间戳(滑动窗口 5s)
+        self._proc_lock = threading.Lock()      # pipeline 线程写 / metrics 异步读
 
         # 阶段耗时滚动平均(监控用)
         self._stage_ms = {
@@ -108,14 +110,12 @@ class VisionPipeline(threading.Thread):
         logger.info("[vision] pipeline %s stopped (frames=%s)", self.camera_id, self._frame_id)
 
     def _process_frame(self, frame) -> None:
-        # 0. 滚动帧率(处理吞吐,EMA 平滑;封顶 60 —— 文件源解码无节流会虚高)
+        # 0. 滚动帧率(处理吞吐,滑动窗口 5s)
         now = time.perf_counter()
-        if self._last_proc_ts > 0:
-            dt = now - self._last_proc_ts
-            if dt > 0:
-                inst = 1.0 / dt
-                self._fps = min(self._fps * 0.9 + inst * 0.1, 60.0)
-        self._last_proc_ts = now
+        with self._proc_lock:
+            self._proc_ts.append(now)
+            while self._proc_ts and now - self._proc_ts[0] > 5.0:
+                self._proc_ts.popleft()
 
         # 1. 检测(降频);非检测帧只做跟踪预测,不判定丢失
         t0 = time.perf_counter()
@@ -167,6 +167,8 @@ class VisionPipeline(threading.Thread):
 
     def close(self, timeout: float = 5.0) -> None:
         self._running = False
+        if hasattr(self._source, "request_stop"):
+            self._source.request_stop()  # 唤醒断流重连循环,让线程可退出
         self.join(timeout=timeout)
 
     def _close_tasks(self) -> None:
@@ -186,11 +188,17 @@ class VisionPipeline(threading.Thread):
     def metrics(self) -> dict:
         with self._stage_lock:
             stages = dict(self._stage_ms)
+        with self._proc_lock:
+            ts = list(self._proc_ts)
+        if len(ts) >= 2 and ts[-1] > ts[0]:
+            fps = (len(ts) - 1) / (ts[-1] - ts[0])
+        else:
+            fps = 0.0
         return {
             "camera_id": self.camera_id,
             "alive": self.is_alive(),
             "frames": self._frame_id,
-            "fps": round(self._fps, 1),
+            "fps": round(fps, 1),
             "tracks": self._tracker.active_count,
             "uptime_seconds": int(time.time() - self._started_at) if self._started_at else 0,
             "stage_ms": {k: round(v, 1) for k, v in stages.items()},

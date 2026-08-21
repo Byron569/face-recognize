@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import psutil
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from ..config import build_camera_config, load_profile_config, resolve_project_path
 from ..schemas.system import SystemStatusOut
@@ -89,8 +89,15 @@ async def system_profiles():
 
 @router.get("/system/config")
 async def get_runtime_config(profile: str = "desktop"):
-    """查看指定档位的运行时合并配置(不含敏感信息)。"""
-    return load_profile_config(profile)
+    """查看指定档位的运行时合并配置(已脱敏,剔除敏感节)。"""
+    try:
+        merged = load_profile_config(profile)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # database 含明文数据库连接串/密码,严禁下发
+    merged.pop("database", None)
+    merged.pop("server", None)
+    return merged
 
 
 @router.put("/system/config")

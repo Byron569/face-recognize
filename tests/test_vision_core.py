@@ -160,6 +160,11 @@ def test_vision_config_from_yaml_shape():
     assert cfg.recognition.threshold == 0.55
 
 
+def test_vision_config_clamps_det_interval_to_minimum_one():
+    cfg = VisionConfig.from_dict({"det_interval": 0})
+    assert cfg.det_interval >= 1
+
+
 def test_recognition_quality_and_temporal_defaults():
     cfg = VisionConfig.from_dict({})
     assert cfg.recognition.quality.min_det_score == 0.60

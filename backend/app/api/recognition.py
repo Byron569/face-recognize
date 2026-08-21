@@ -15,8 +15,8 @@ router = APIRouter()
 
 @router.get("/recognition-logs", response_model=RecognitionLogListOut)
 async def list_recognition_logs(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(1, ge=1, description="页码,从 1 起"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数,上限 200"),
     camera_id: str | None = None,
     identity_id: str | None = Query(None),
     start: datetime | None = None,

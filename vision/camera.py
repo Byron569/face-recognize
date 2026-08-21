@@ -60,6 +60,7 @@ class OpenCVFrameSource(FrameSource):
         self._max_reconnect_delay = max_reconnect_delay
         self._cap = None
         self._current_delay = reconnect_delay
+        self._stop_requested = False
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -71,7 +72,13 @@ class OpenCVFrameSource(FrameSource):
                 cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
                 cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
             else:
-                cap = cv2.VideoCapture(self._source)
+                # 本地摄像头索引("0"/"1")须转 int,否则会被当作文件名打开失败
+                target = (
+                    int(self._source)
+                    if isinstance(self._source, str) and self._source.isdigit()
+                    else self._source
+                )
+                cap = cv2.VideoCapture(target)
             # width/height 为 0 时跳过设置 → 使用源原生分辨率(对 RTSP/文件源本就无效)
             if self._width > 0:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
@@ -108,16 +115,26 @@ class OpenCVFrameSource(FrameSource):
             self.release()
             return False, None
 
+    def request_stop(self) -> None:
+        """请求中止重连循环(由流水线停机时调用)。"""
+        self._stop_requested = True
+
     def reconnect(self) -> bool:
-        """读失败后调用:按指数退避重连,返回是否恢复。"""
+        """读失败后调用:按指数退避重连,返回是否恢复(request_stop 可中断)。"""
         self.release()
         delay = self._current_delay
-        while True:
+        while not self._stop_requested:
             logger.info("[vision] reconnect in %.1fs ...", delay)
-            time.sleep(delay)
+            slept = 0.0
+            while slept < delay and not self._stop_requested:
+                time.sleep(min(0.5, delay - slept))
+                slept += 0.5
+            if self._stop_requested:
+                return False
             if self.open():
                 return True
             delay = min(delay * 2, self._max_reconnect_delay)
+        return False
 
     def release(self) -> None:
         if self._cap is not None:

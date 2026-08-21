@@ -176,9 +176,13 @@ class PipelineManager:
     # ── 摄像头生命周期 ────────────────────────────────────
 
     async def start_camera(self, camera_id: str, source, config: Dict[str, Any]) -> bool:
-        if camera_id in self._pipelines:
-            logger.warning("[pipeline-manager] camera %s already running", camera_id)
-            return False
+        existing = self._pipelines.get(camera_id)
+        if existing is not None:
+            if existing.is_alive():
+                logger.warning("[pipeline-manager] camera %s already running", camera_id)
+                return False
+            # 线程已退出(如源打开失败)— 清理残留后允许重启
+            await self.stop_camera(camera_id)
 
         if not self._gallery_loaded:
             await self.load_gallery()
@@ -237,11 +241,11 @@ class PipelineManager:
             with self._lock:
                 has_viewers = bool(self._subscribers.get(camera_id))
                 stream_metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
-            if not has_viewers:
-                return  # 无订阅者:不编码,省 CPU
             frame_copy = context.frame.copy()
-            self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧
+            self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧(与是否有订阅者无关)
             persons = [t.to_dict() for t in context.tracks]
+            if not has_viewers:
+                return  # 无订阅者:跳过编码,省 CPU
             item = (frame_copy, persons, context.frame_id)
             try:
                 enc_q.put_nowait(item)
@@ -290,6 +294,12 @@ class PipelineManager:
             self._stream_metrics.setdefault(camera_id, StreamMetrics())
 
         pipeline.start()
+        # 短暂探测:源立即打开失败的流水线线程会马上退出,据此返回失败
+        pipeline.join(timeout=1.0)
+        if not pipeline.is_alive():
+            await self.stop_camera(camera_id)
+            logger.error("[pipeline-manager] camera %s source open failed", camera_id)
+            return False
         logger.info("[pipeline-manager] camera %s started (device=%s, pack=%s)",
                     camera_id, engine.device, vision_cfg.model_pack)
         return True
@@ -298,6 +308,8 @@ class PipelineManager:
         with self._lock:
             pipeline = self._pipelines.pop(camera_id, None)
             self._stream_settings.pop(camera_id, None)
+            self._stream_metrics.pop(camera_id, None)  # 清理流指标,避免启停累积
+        self._last_frames.pop(camera_id, None)          # 清理抓拍缓存帧
         # 停止编码线程(唤醒 + join,避免线程泄漏)
         stop_evt = self._encode_stops.pop(camera_id, None)
         enc_thread = self._encode_threads.pop(camera_id, None)
@@ -320,6 +332,11 @@ class PipelineManager:
 
     def list_cameras(self) -> list[str]:
         return list(self._pipelines.keys())
+
+    def is_running(self, camera_id: str) -> bool:
+        """摄像头流水线是否真正存活(在线程存活的意义上)。"""
+        p = self._pipelines.get(camera_id)
+        return p is not None and p.is_alive()
 
     async def shutdown(self) -> None:
         for camera_id in list(self._pipelines.keys()):

@@ -131,17 +131,26 @@ class FaceService:
         """一次性导入旧版 pickle 底库(兼容旧数据迁移)。"""
         import os
         import pickle
+        from pathlib import Path
 
-        path = resolve_project_path(pickle_path)
-        if not os.path.exists(path):
+        # 解析后必须位于 {project_root}/face_db/ 内,防止任意路径读取
+        root = Path(resolve_project_path("face_db")).resolve()
+        p = Path(resolve_project_path(pickle_path)).resolve()
+        if not p.is_relative_to(root):
+            raise ValueError(f"路径必须在 face_db/ 目录内: {pickle_path}")
+        if not os.path.exists(p):
             return 0
-        with open(path, "rb") as f:
+        with open(p, "rb") as f:
             content = f.read()
         if b"\n" in content:
             _, payload = content.split(b"\n", 1)
         else:
             payload = content
-        records = pickle.loads(payload)
+        try:
+            records = pickle.loads(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[face-service] pickle 解析失败: %s", pickle_path)
+            raise ValueError("pickle 文件解析失败,格式不合法") from exc
         count = 0
         for rec in records:
             name = rec.get("name")
@@ -165,3 +174,7 @@ class FaceService:
         rows = await self._repo.all_embeddings()
         self._gallery.rebuild(rows)
         logger.info("[face-service] gallery refreshed: %s embeddings", len(rows))
+
+    async def refresh_gallery(self) -> None:
+        """底库变更后刷新内存快照(公开入口,供 API 层调用)。"""
+        await self._refresh_gallery()

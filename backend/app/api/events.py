@@ -16,9 +16,9 @@ router = APIRouter()
 
 @router.get("/events", response_model=EventListOut)
 async def list_events(
-    page: int = 1,
-    page_size: int = 20,
-    event_type: str | None = Query(None),
+    page: int = Query(1, ge=1, description="页码,从 1 起"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数,上限 200"),
+    event_type: EventType | None = Query(None, description="事件类型,见 /api/events/types"),
     camera_id: str | None = None,
     acknowledged: bool | None = None,
     start: datetime | None = None,
@@ -57,7 +57,7 @@ async def acknowledge_event(event_id: int, db: AsyncSession = Depends(get_db)):
 async def delete_events(
     ids: str | None = Query(None, description="逗号分隔的事件 id,如 ids=1,2,3"),
     all: bool = Query(False, description="删除当前筛选条件下的全部记录(与 ids 二选一)"),
-    event_type: str | None = Query(None),
+    event_type: EventType | None = Query(None),
     camera_id: str | None = Query(None),
     acknowledged: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -71,7 +71,10 @@ async def delete_events(
     if all:
         deleted = await svc.delete_events_filtered(event_type, camera_id, acknowledged)
     elif ids:
-        id_list = [int(x) for x in ids.split(",") if x.strip()]
+        try:
+            id_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(422, "ids 必须为逗号分隔的整数,如 ids=1,2,3")
         deleted = await svc.delete_events(id_list)
     else:
         raise HTTPException(422, "ids 或 all=true 至少提供一个")

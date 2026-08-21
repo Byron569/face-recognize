@@ -87,7 +87,10 @@ def load_profile_config(profile: Optional[str] = None) -> Dict[str, Any]:
     base_dir = _configs_path(settings)
     merged = _read_yaml(base_dir / "default.yaml")
     if profile:
-        merged = _deep_merge(merged, _read_yaml(base_dir / "profiles" / f"{profile}.yaml"))
+        profile_path = base_dir / "profiles" / f"{profile}.yaml"
+        if not profile_path.exists():
+            raise ValueError(f"未知 profile: {profile}(可用: desktop/balanced/edge_minimal)")
+        merged = _deep_merge(merged, _read_yaml(profile_path))
     return merged
 
 

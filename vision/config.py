@@ -127,7 +127,7 @@ class VisionConfig:
             det_size=det_size,
             det_thresh=float(cfg.get("det_thresh", 0.5)),
             max_faces=int(cfg.get("max_faces", 0)),
-            det_interval=int(cfg.get("det_interval", 2)),
+            det_interval=max(1, int(cfg.get("det_interval", 2))),  # 下界 1,防除零
             track=TrackConfig.from_dict(cfg.get("track")),
             recognition=RecognitionConfig.from_dict(cfg.get("recognition")),
         )

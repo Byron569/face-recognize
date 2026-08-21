@@ -17,6 +17,20 @@
 
 ## 快速开始
 
+> **GPU 环境版本对应（重要）**:`onnxruntime-gpu` 与 CUDA 运行库必须匹配，否则推理会**静默降级为 CPU**
+>（启动日志出现 `请求 CUDA 但实际使用 CPUExecutionProvider` / `cublasLtXX_XX.dll 缺失` 即为该问题）：
+>
+> | onnxruntime-gpu | CUDA 运行库 | 适用场景 |
+> |---|---|------|
+> | 1.20.x ~ 1.22.x | CUDA 12.x（NVIDIA 546+ 驱动自带） | RTX 30/40 系推荐 |
+> | 1.29.x | CUDA 13.x（需另装运行库） | 高端卡 + 手动装 CUDA 13 |
+>
+> 排查：`python -c "import onnxruntime; print(onnxruntime.get_available_providers())"`，
+> 若列表含 `CUDAExecutionProvider` 则 GPU 就绪；仅 `CPUExecutionProvider` 则需按上表重装匹配版本
+>（推荐 `pip install onnxruntime-gpu==1.21.0`，与 CUDA 12.6 实测匹配，detect ~285ms→~10ms）。更省事的做法是直接用项目自带 GPU 就绪虚拟环境：`D:\ai-monitor-1.1.0\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000`。`requirements.txt` 已锁定 CUDA 12.x 推荐档。
+> 真判据：用 `InferenceSession` 实证(`get_available_providers()` 是假阳性)——`python -c "import onnxruntime as ort; s=ort.InferenceSession(r'D:\ai-monitor-1.1.0\models\buffalo_s\det_500m.onnx', providers=['CUDAExecutionProvider','CPUExecutionProvider']); print(s.get_providers())"`，打印 `['CUDAExecutionProvider','CPUExecutionProvider']` 即 GPU 真正可用。
+
+
 ```bash
 # 1. 数据库(PostgreSQL 16)
 docker run -d --name ai-monitor-db -p 5432:5432 \

@@ -11,6 +11,10 @@ PyYAML>=6.0
 
 # 推理内核(InsightFace 官方依赖)
 insightface>=0.7.3
-onnxruntime-gpu>=1.15        # GPU 推理(CUDA);纯 CPU 环境改用 onnxruntime
+# GPU 推理;注意 onnxruntime-gpu 与 CUDA 运行库版本必须匹配:
+#   onnxruntime-gpu 1.20.x ~ 1.22.x <-> CUDA 12.x(NVIDIA 546+ 驱动自带,RTX 30/40 系推荐)
+#   onnxruntime-gpu 1.29.x         <-> CUDA 13.x(需额外安装 CUDA 13 运行库)
+# 纯 CPU 环境改用 onnxruntime
+onnxruntime-gpu>=1.20,<1.23        # GPU 推理(CUDA 12.x 推荐档)
 opencv-python-headless>=4.8
 numpy>=1.24
