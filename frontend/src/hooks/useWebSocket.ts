@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { createReconnectGuard } from './reconnectGuard';
 
 type MessageHandler = (data: any) => void;
 
@@ -14,11 +15,13 @@ export function useWebSocket(
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const attemptsRef = useRef(0);
+  const reconnectGuard = useRef(createReconnectGuard());
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
 
   const connect = useCallback(() => {
-    if (!path) return;
+    if (!path || !reconnectGuard.current.isActive()) return;
+    const generation = reconnectGuard.current.start();
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${location.host}${path}`);
     ws.binaryType = binaryType;
@@ -47,9 +50,13 @@ export function useWebSocket(
     };
 
     ws.onclose = () => {
+      if (!reconnectGuard.current.canReconnect(generation)) return;
       const delay = reconnectBaseMs * Math.min(2 ** attemptsRef.current, 8);
       attemptsRef.current += 1;
-      reconnectTimer.current = setTimeout(connect, delay);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = setTimeout(() => {
+        if (reconnectGuard.current.canReconnect(generation)) connect();
+      }, delay);
     };
 
     ws.onerror = () => {
@@ -58,12 +65,14 @@ export function useWebSocket(
   }, [path, reconnectBaseMs, binaryType]);
 
   const disconnect = useCallback(() => {
+    reconnectGuard.current.stop();
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     wsRef.current?.close();
     wsRef.current = null;
   }, []);
 
   useEffect(() => {
+    reconnectGuard.current.start();
     connect();
     return disconnect;
   }, [connect, disconnect]);

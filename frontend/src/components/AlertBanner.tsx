@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Alert } from 'antd';
 import { eventMeta } from '../config';
+import { createReconnectGuard } from '../hooks/reconnectGuard';
 
 interface AlertItem {
   id: string | number;
@@ -44,6 +45,7 @@ export default function AlertBanner() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectGuard = useRef(createReconnectGuard());
   const idCounter = useRef(0);
 
   useEffect(() => {
@@ -65,6 +67,8 @@ export default function AlertBanner() {
 
   useEffect(() => {
     const connect = () => {
+      if (!reconnectGuard.current.isActive()) return;
+      const generation = reconnectGuard.current.start();
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${protocol}//${location.host}/ws/events`);
       wsRef.current = ws;
@@ -87,12 +91,18 @@ export default function AlertBanner() {
       };
 
       ws.onclose = () => {
-        reconnectTimer.current = setTimeout(connect, 3000);
+        if (!reconnectGuard.current.canReconnect(generation)) return;
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = setTimeout(() => {
+          if (reconnectGuard.current.canReconnect(generation)) connect();
+        }, 3000);
       };
     };
 
+    reconnectGuard.current.start();
     connect();
     return () => {
+      reconnectGuard.current.stop();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
       wsRef.current = null;
