@@ -13,6 +13,9 @@ dist/
 # IDE
 .idea/
 
+# Agent worktrees
+.worktrees/
+
 # Data（运行时产物: 底库 pickle / 头像 / 抓拍）
 face_db/
 
