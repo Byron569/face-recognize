@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, Space, Tag, message } from 'antd';
 import { CameraOutlined, WifiOutlined } from '@ant-design/icons';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { snapshotCamera } from '../api/cameras';
 import { detectionColors, videoConfig } from '../config';
+import { DecodedFramePacket, parseFramePacket } from '../stream/frameProtocol';
 
 interface Detection {
   track_id: number;
@@ -21,34 +22,107 @@ interface Props {
 /** 单路摄像头卡片:WebSocket 视频流 + Canvas 检测框叠加 + 抓拍。 */
 export default function CameraCell({ cameraId, title, profile }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement>(new Image());
-  const detectionsRef = useRef<Detection[]>([]);
+  const detectionsByFrameRef = useRef(new Map<number, Detection[]>());
+  const pendingFrameRef = useRef<DecodedFramePacket | null>(null);
+  const lastFrameRef = useRef<DecodedFramePacket | null>(null);
+  const drawScheduledRef = useRef(false);
+  const animationFrameRef = useRef<number | null>(null);
+  const canvasSizeRef = useRef({ width: 0, height: 0 });
+  const mountedRef = useRef(true);
+  const scheduleDrawRef = useRef<() => void>(() => {});
   const [hasVideo, setHasVideo] = useState(false);
 
-  const handleMessage = useCallback((data: any) => {
-    if (data.type === 'detections') {
-      detectionsRef.current = data.persons || [];
+  const drawLatestFrame = useCallback(async () => {
+    const frame = pendingFrameRef.current;
+    pendingFrameRef.current = null;
+    if (!frame) {
+      drawScheduledRef.current = false;
+      return;
     }
-    if (data.type === 'frame') {
-      setHasVideo(true);
-      const img = imgRef.current;
-      img.onload = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-        for (const d of detectionsRef.current) {
-          drawDetection(ctx, d);
-        }
-      };
-      img.src = `data:image/jpeg;base64,${data.data}`;
+
+    let bitmap: ImageBitmap | null = null;
+    try {
+      bitmap = await createImageBitmap(frame.jpeg);
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!canvas || !ctx) return;
+
+      if (
+        canvasSizeRef.current.width !== bitmap.width ||
+        canvasSizeRef.current.height !== bitmap.height
+      ) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvasSizeRef.current = { width: bitmap.width, height: bitmap.height };
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      for (const detection of detectionsByFrameRef.current.get(frame.frameId) || []) {
+        drawDetection(ctx, detection);
+      }
+      for (const id of detectionsByFrameRef.current.keys()) {
+        if (id < frame.frameId - 30) detectionsByFrameRef.current.delete(id);
+      }
+      if (mountedRef.current) setHasVideo(true);
+      lastFrameRef.current = frame;
+    } catch {
+      // Ignore malformed frames and continue with the newest pending packet.
+    } finally {
+      bitmap?.close();
+      drawScheduledRef.current = false;
+      animationFrameRef.current = null;
+      if (mountedRef.current && pendingFrameRef.current) {
+        scheduleDrawRef.current();
+      }
     }
   }, []);
 
-  useWebSocket(`/ws/cameras/${cameraId}`, handleMessage);
+  const scheduleDraw = useCallback(() => {
+    if (drawScheduledRef.current) return;
+    drawScheduledRef.current = true;
+    animationFrameRef.current = requestAnimationFrame(() => {
+      animationFrameRef.current = null;
+      void drawLatestFrame();
+    });
+  }, [drawLatestFrame]);
+  scheduleDrawRef.current = scheduleDraw;
+
+  const handleMessage = useCallback((data: any) => {
+    if (data instanceof ArrayBuffer) {
+      try {
+        pendingFrameRef.current = parseFramePacket(data);
+        scheduleDrawRef.current();
+      } catch {
+        // Ignore unsupported binary messages.
+      }
+      return;
+    }
+    if (data.type === 'detections') {
+      const frameId = Number(data.frame_id);
+      if (!Number.isFinite(frameId)) return;
+      detectionsByFrameRef.current.set(frameId, data.persons || []);
+      if (lastFrameRef.current?.frameId === frameId && !pendingFrameRef.current) {
+        pendingFrameRef.current = lastFrameRef.current;
+        scheduleDrawRef.current();
+      }
+      for (const id of detectionsByFrameRef.current.keys()) {
+        if (id < frameId - 30) detectionsByFrameRef.current.delete(id);
+      }
+    }
+  }, []);
+
+  useWebSocket(`/ws/cameras/${cameraId}`, handleMessage, 2000, 'arraybuffer');
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pendingFrameRef.current = null;
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      drawScheduledRef.current = false;
+    };
+  }, []);
 
   const handleSnapshot = async () => {
     try {

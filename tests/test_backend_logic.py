@@ -34,6 +34,18 @@ def test_camera_extra_overrides_profile():
     assert cfg["vision"]["device"] == "cuda"
 
 
+def test_camera_stream_config_overrides_all_default_preview_values():
+    cfg = build_camera_config(
+        "desktop",
+        {"stream": {"max_height": 720, "jpeg_quality": 68, "push_fps": 20}},
+    )
+    assert cfg["stream"] == {
+        "max_height": 720,
+        "jpeg_quality": 68,
+        "push_fps": 20,
+    }
+
+
 # ── 内存底库快照 ────────────────────────────────────────
 
 def test_gallery_search():

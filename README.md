@@ -13,6 +13,7 @@
 - **可插拔任务架构**:`class_path` 动态加载,跌倒检测等扩展任务零改动接入(见 docs/PLUGIN_GUIDE.md)
 - **全参数配置化**:`default.yaml` → `profiles/{desktop,balanced,edge_minimal}.yaml` → 摄像头个性化 JSONB,代码零硬编码
 - **工业化工程**:Alembic 版本化迁移、api→services→repositories 分层、引擎池共享显存、断线自动重连、事件自动落库与 WS 推送
+- **流畅预览**:摄像头预览使用 `binary_jpeg_v1` 二进制 JPEG、单路编码一次、多订阅者单槽位丢旧帧,慢客户端不会拖住其他客户端
 
 ## 快速开始
 
@@ -61,12 +62,18 @@ vision:
   det_interval: 2
   track: { iou_threshold: 0.3, max_lost: 15, min_hits: 2 }
   recognition: { threshold: 0.40, cooldown_frames: 300, ... }
+stream:
+  max_height: 480       # 默认预览高度;局域网高画质可设 720
+  jpeg_quality: 70
+  push_fps: 20
 tasks:
   face_recognition: { enabled: true, class_path: app.tasks.builtin.face_recognition_task.FaceRecognitionTask }
   fall_detection:  { enabled: false, class_path: null }   # 扩展任务预留
 ```
 
 级联优先级:摄像头 `cameras.config`(JSONB)> profile 文件 > default.yaml。
+
+预览分辨率只影响 WebSocket JPEG，不改变 InsightFace 的采集/推理分辨率。默认 480p 适合普通局域网；需要更清晰的局域网预览时，将摄像头的 `stream.max_height` 显式改为 720。已有摄像头保存的 `stream.max_height: 0`(原生)不会被自动覆盖，需在系统设置中手动调整。
 
 ## 项目结构
 
