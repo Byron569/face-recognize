@@ -12,6 +12,7 @@ dist/
 
 # IDE
 .idea/
+rebel.xml
 
 # Agent worktrees
 .worktrees/
@@ -33,3 +34,6 @@ models/buffalo_l/
 # OS
 .DS_Store
 Thumbs.db
+
+# InsightFace 按官方布局自动下载的模型缓存(backend/models/,约 280MB,含 zip 包),禁止入库
+backend/models/
