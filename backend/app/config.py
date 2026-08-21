@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     stream_max_height: int = 480
     stream_jpeg_quality: int = 70
-    stream_push_fps: int = 10
+    stream_push_fps: int = 20
 
     event_retention_days: int = 30
     cleanup_cron_hour: int = 3

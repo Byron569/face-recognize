@@ -9,6 +9,7 @@ export function useWebSocket(
   path: string | null,
   onMessage: MessageHandler,
   reconnectBaseMs: number = 2000,
+  binaryType: BinaryType = 'blob',
 ) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -20,9 +21,23 @@ export function useWebSocket(
     if (!path) return;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${location.host}${path}`);
+    ws.binaryType = binaryType;
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        attemptsRef.current = 0;
+        onMessageRef.current(event.data);
+        return;
+      }
+      if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buffer) => {
+          attemptsRef.current = 0;
+          onMessageRef.current(buffer);
+        }).catch(() => { /* ignore unreadable binary */ });
+        return;
+      }
+      if (typeof event.data !== 'string') return;
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'ping') return;
@@ -40,7 +55,7 @@ export function useWebSocket(
     ws.onerror = () => {
       ws.close();
     };
-  }, [path, reconnectBaseMs]);
+  }, [path, reconnectBaseMs, binaryType]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);

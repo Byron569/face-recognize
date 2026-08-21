@@ -69,6 +69,7 @@ async def system_metrics():
             "tracks": m.get("tracks", 0),
             "uptime_seconds": m.get("uptime_seconds", 0),
             "stage_ms": m.get("stage_ms", {}),
+            "stream": mgr.get_stream_metrics(cid),
         }
     return {
         "cameras": cameras,

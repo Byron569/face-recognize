@@ -1,4 +1,4 @@
-"""WebSocket:摄像头实时视频流(JPEG base64 + 检测结果)。"""
+"""WebSocket:摄像头实时二进制 JPEG 预览流 + 检测结果。"""
 
 from __future__ import annotations
 import asyncio
@@ -16,7 +16,7 @@ router = APIRouter()
 async def camera_stream(websocket: WebSocket, camera_id: str):
     await websocket.accept()
     mgr = get_pipeline_manager()
-    mgr.register_ws(camera_id, websocket)
+    await mgr.register_ws(camera_id, websocket)
     logger.info("WS client connected: %s", camera_id)
     try:
         while True:
@@ -32,4 +32,4 @@ async def camera_stream(websocket: WebSocket, camera_id: str):
     except Exception:  # noqa: BLE001
         logger.exception("WS error: %s", camera_id)
     finally:
-        mgr.unregister_ws(camera_id, websocket)
+        await mgr.unregister_ws(camera_id, websocket)

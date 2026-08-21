@@ -52,6 +52,17 @@ def test_camera_extra_overrides_nested_recognition_stability_config():
     assert rec["temporal"]["min_valid_samples"] == 3
     assert rec["temporal"]["top_k"] == 2
 
+def test_camera_stream_config_overrides_all_default_preview_values():
+    cfg = build_camera_config(
+        "desktop",
+        {"stream": {"max_height": 720, "jpeg_quality": 68, "push_fps": 20}},
+    )
+    assert cfg["stream"] == {
+        "max_height": 720,
+        "jpeg_quality": 68,
+        "push_fps": 20,
+    }
+
 
 # ── 内存底库快照 ────────────────────────────────────────
 

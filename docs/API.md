@@ -68,6 +68,8 @@ PUT /api/cameras/cam0/resolution
 响应:`{"updated": true, "restarted": true, "capture": "native", "stream_max_height": 480}`
 `restarted` 表示该摄像头流水线已自动重启并应用新配置;`capture` 为 `"WxH"` 或 `"native"`。
 
+预览分辨率只影响 WebSocket JPEG,不改变 InsightFace 的采集/推理分辨率。默认 480p 适合普通局域网；局域网内需要更清晰的画面时,可将 `stream.max_height` 设为 720。已有摄像头配置中的 `stream.max_height: 0`(原生)不会被自动覆盖,需在系统设置中手动调整。
+
 ## 3. 人脸库 `/api/faces`
 
 | 方法 | 路径 | 说明 |
@@ -111,7 +113,7 @@ PUT /api/cameras/cam0/resolution
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/system/status` | CPU/内存/GPU(nvidia-smi)/摄像头数/引擎数/底库大小 |
-| GET | `/api/system/metrics` | 各摄像头 FPS、帧数、活跃目标、各阶段耗时 |
+| GET | `/api/system/metrics` | 各摄像头推理 FPS、帧数、活跃目标、各阶段耗时及预览流指标 |
 | GET | `/api/system/profiles` | 部署档位清单(desktop/balanced/edge_minimal) |
 | GET | `/api/system/config?profile=` | 指定档位的运行时合并配置 |
 | PUT | `/api/system/config` | **预留**:运行时热更新全局配置 |
@@ -130,17 +132,30 @@ PUT /api/cameras/cam0/resolution
 
 **服务端 → 客户端:**
 
+视频帧不再使用 Base64 JSON,而是使用版本化二进制协议 `binary_jpeg_v1`:
+
+```text
+byte 0     : packet type = 0x01
+byte 1..8  : frame_id, unsigned 64-bit big-endian
+byte 9..N  : raw JPEG bytes (`image/jpeg`)
+```
+
+随后发送同一个 `frame_id` 的检测文本消息:
+
 ```json
-{ "type": "frame", "data": "<base64 JPEG>", "timestamp": 1712345678.1, "frame_id": 1234 }
 { "type": "detections", "frame_id": 1234, "persons": [
     { "track_id": 1, "bbox": [x, y, w, h], "identity": "Byron", "confidence": 0.87 }
 ] }
 { "type": "ping" }
 ```
 
-- `frame` 已按 `stream.max_height`(默认 480)缩放并 JPEG 编码;
+- 客户端需要将摄像头 WebSocket 的 `binaryType` 设为 `arraybuffer`,按上述头部解析二进制帧;
+- JPEG 已按 `stream.max_height`(默认 480)缩放并按 `stream.jpeg_quality`(默认 70)编码;
 - `detections.bbox` 为 `[x, y, w, h]`(左上角 + 宽高),前端 Canvas 直接可用;
-- 推流频率由 `stream.push_fps` 控制(默认 10 FPS)。
+- 推流频率由 `stream.push_fps` 控制(默认 20 FPS,服务端上限 30);
+- 服务端每路摄像头只编码一次 JPEG;每个订阅者只有一个待发送槽位,慢客户端会丢弃旧帧而不会拖慢其他订阅者;
+- `/api/system/metrics` 的每路 `stream` 包含 `preview_enqueue_fps`、`encoded_fps`、`sent_fps`、`encode_dropped_frames`、`subscriber_dropped_frames` 和 `avg_jpeg_bytes`;
+- 无订阅者时不会执行预览 JPEG 编码,因此 `encoded_fps` 应为 0,但摄像头推理流水线仍可正常运行。
 
 ### `/ws/events` — 全局事件通道
 

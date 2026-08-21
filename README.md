@@ -13,6 +13,7 @@
 - **可插拔任务架构**:`class_path` 动态加载,跌倒检测等扩展任务零改动接入(见 docs/PLUGIN_GUIDE.md)
 - **全参数配置化**:`default.yaml` → `profiles/{desktop,balanced,edge_minimal}.yaml` → 摄像头个性化 JSONB,代码零硬编码
 - **工业化工程**:Alembic 版本化迁移、api→services→repositories 分层、引擎池共享显存、断线自动重连、事件自动落库与 WS 推送
+- **流畅预览**:摄像头预览使用 `binary_jpeg_v1` 二进制 JPEG、单路编码一次、多订阅者单槽位丢旧帧,慢客户端不会拖住其他客户端
 
 ## 快速开始
 
@@ -64,6 +65,14 @@ vision:
     threshold: 0.40
     quality: { min_det_score: 0.60, min_face_size: 80 }
     temporal: { min_valid_samples: 3, max_samples_per_track: 8, top_k: 3 }
+  recognition:
+    threshold: 0.40
+    quality: { min_det_score: 0.60, min_face_size: 80 }
+    temporal: { min_valid_samples: 3, max_samples_per_track: 8, top_k: 3 }
+stream:
+  max_height: 480       # 默认预览高度;局域网高画质可设 720
+  jpeg_quality: 70
+  push_fps: 20
 tasks:
   face_recognition: { enabled: true, class_path: app.tasks.builtin.face_recognition_task.FaceRecognitionTask }
   fall_detection:  { enabled: false, class_path: null }   # 扩展任务预留
@@ -72,6 +81,9 @@ tasks:
 级联优先级:摄像头 `cameras.config`(JSONB)> profile 文件 > default.yaml。
 
 实时识别只使用通过质量筛选的检测帧，并按同一轨迹/候选身份聚合 Top-K 相似度后确认。未来如需切换 embedding 模型，建议为每条 embedding 保存 `model_pack`、模型指纹和维度，避免混用不同特征空间；本次不做数据库迁移或底库重建。
+实时识别只使用通过质量筛选的检测帧，并按同一轨迹/候选身份聚合 Top-K 相似度后确认。未来如需切换 embedding 模型，建议为每条 embedding 保存 `model_pack`、模型指纹和维度，避免混用不同特征空间；本次不做数据库迁移或底库重建。
+
+预览分辨率只影响 WebSocket JPEG，不改变 InsightFace 的采集/推理分辨率。默认 480p 适合普通局域网；需要更清晰的局域网预览时，将摄像头的 `stream.max_height` 显式改为 720。已有摄像头保存的 `stream.max_height: 0`(原生)不会被自动覆盖，需在系统设置中手动调整。
 
 ## 项目结构
 
