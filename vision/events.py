@@ -64,6 +64,7 @@ class TrackResult:
     identity: str = "Unknown"
     similarity: float = 0.0
     embedding: Optional[Any] = None       # 该 track 最新的人脸 embedding(识别任务使用)
+    embedding_frame_id: Optional[int] = None  # embedding 最近一次更新的检测帧号
 
     @property
     def is_identified(self) -> bool:

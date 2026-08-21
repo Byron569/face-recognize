@@ -34,6 +34,25 @@ def test_camera_extra_overrides_profile():
     assert cfg["vision"]["device"] == "cuda"
 
 
+def test_camera_extra_overrides_nested_recognition_stability_config():
+    merged = build_camera_config(
+        "desktop",
+        {
+            "vision": {
+                "recognition": {
+                    "quality": {"min_face_size": 112},
+                    "temporal": {"top_k": 2},
+                }
+            }
+        },
+    )
+    rec = merged["vision"]["recognition"]
+    assert rec["quality"]["min_det_score"] == 0.60
+    assert rec["quality"]["min_face_size"] == 112
+    assert rec["temporal"]["min_valid_samples"] == 3
+    assert rec["temporal"]["top_k"] == 2
+
+
 # ── 内存底库快照 ────────────────────────────────────────
 
 def test_gallery_search():
@@ -140,8 +159,8 @@ def test_recognition_task_limits_attempts_even_when_unknown():
         frame_id=10,
         frame=None,
         tracks=[
-            TrackResult(track_id=1, bbox=(0, 0, 10, 10), embedding=[0.1] * 512),
-            TrackResult(track_id=2, bbox=(20, 20, 30, 30), embedding=[0.2] * 512),
+            TrackResult(track_id=1, bbox=(0, 0, 100, 100), score=0.9, embedding=[0.1] * 512),
+            TrackResult(track_id=2, bbox=(120, 120, 220, 220), score=0.9, embedding=[0.2] * 512),
         ],
     )
     task.run(None, ctx)

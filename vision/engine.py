@@ -89,17 +89,66 @@ class InsightFaceEngine:
     def _report_backend(self) -> None:
         det_model = self._app.models.get("detection")
         session = getattr(det_model, "session", None)
-        if session is not None:
-            actual = session.get_providers()
-            if self._device == "cuda" and "CUDAExecutionProvider" not in actual:
-                logger.warning(
-                    "[vision] 请求 CUDA 但实际使用 %s — 请检查 onnxruntime-gpu 与 NVIDIA 驱动",
-                    actual,
-                )
-            logger.info(
-                "[vision] engine ready: pack=%s device=%s providers=%s det_size=%s",
-                self._config.model_pack, self._device, actual, self._config.det_size,
+        actual = session.get_providers() if session is not None else list(self._providers)
+        if self._device == "cuda" and "CUDAExecutionProvider" not in actual:
+            logger.warning(
+                "[vision] 请求 CUDA 但实际使用 %s — 请检查 onnxruntime-gpu 与 NVIDIA 驱动",
+                actual,
             )
+
+        model_dir, detection_files, recognition_files = self._model_files()
+        if not model_dir.is_dir():
+            logger.warning(
+                "[vision] model pack files missing: pack=%s model_dir=%s; "
+                "InsightFace may attempt to auto-download",
+                self._config.model_pack,
+                model_dir,
+            )
+        if not detection_files:
+            logger.warning(
+                "[vision] detection model file missing: pack=%s model_dir=%s; "
+                "InsightFace may attempt to auto-download",
+                self._config.model_pack,
+                model_dir,
+            )
+        if not recognition_files:
+            logger.warning(
+                "[vision] recognition model file missing: pack=%s model_dir=%s; "
+                "InsightFace may attempt to auto-download",
+                self._config.model_pack,
+                model_dir,
+            )
+        logger.info(
+            "[vision] engine ready: pack=%s detection_models=%s recognition_models=%s "
+            "requested_device=%s device=%s providers=%s det_size=%s",
+            self._config.model_pack,
+            [str(path) for path in detection_files],
+            [str(path) for path in recognition_files],
+            self._config.device,
+            self._device,
+            actual,
+            self._config.det_size,
+        )
+
+    def _model_files(self):
+        from pathlib import Path
+
+        model_dir = (Path(self._model_root) / "models" / self._config.model_pack).resolve()
+        files = sorted(model_dir.glob("*.onnx"))
+        detection_files = [path for path in files if path.name.lower().startswith("det")]
+        recognition_files = [
+            path
+            for path in files
+            if path not in detection_files
+            and (
+                path.name.lower().startswith("w600k")
+                or "recogn" in path.name.lower()
+                or "arcface" in path.name.lower()
+            )
+        ]
+        if not recognition_files:
+            recognition_files = [path for path in files if path not in detection_files]
+        return model_dir, detection_files, recognition_files
 
     # ── 推理入口 ──────────────────────────────────────────
 

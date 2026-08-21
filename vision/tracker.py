@@ -181,7 +181,7 @@ class STrack:
 
     __slots__ = (
         "track_id", "mean", "covariance", "score", "state", "tracklet_len",
-        "frame_id", "start_frame", "identity", "similarity", "embedding",
+        "frame_id", "start_frame", "identity", "similarity", "embedding", "embedding_frame_id",
         "_tlwh", "_kf", "_confirm_hits", "_ever_confirmed",
     )
 
@@ -196,6 +196,7 @@ class STrack:
         self.identity = "Unknown"
         self.similarity = 0.0
         self.embedding = None
+        self.embedding_frame_id = None
         self._confirm_hits = max(1, confirm_hits)
         self._ever_confirmed = False
         self._kf = KalmanFilter()
@@ -274,6 +275,7 @@ class STrack:
             identity=self.identity,
             similarity=self.similarity,
             embedding=self.embedding,
+            embedding_frame_id=self.embedding_frame_id,
         )
 
 
@@ -324,6 +326,7 @@ class ByteTracker:
             tlwh, score, emb = dets_high[idet]
             if emb is not None:
                 track.embedding = emb
+                track.embedding_frame_id = self._frame_id
             if track.state in (_TrackState.TRACKED, _TrackState.NEW):
                 track.update(tlwh, score, self._frame_id)  # update 内部按 min_hits 确认
             else:  # LOST
@@ -344,6 +347,7 @@ class ByteTracker:
                 tlwh, score, emb = dets_low[idet]
                 if emb is not None:
                     track.embedding = emb
+                    track.embedding_frame_id = self._frame_id
                 track.update(tlwh, score, self._frame_id)
                 rescued.add(track)
 
@@ -364,6 +368,7 @@ class ByteTracker:
             self._next_tid += 1
             if emb is not None:
                 track.embedding = emb
+                track.embedding_frame_id = self._frame_id
             track.tracklet_len = 1
             if track.tracklet_len >= self._confirm_hits:
                 track.activate(self._frame_id)

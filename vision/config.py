@@ -37,6 +37,36 @@ class TrackConfig:
 
 
 @dataclass
+class RecognitionQualityConfig:
+    min_det_score: float = 0.60
+    min_face_size: int = 80
+
+    @classmethod
+    def from_dict(cls, cfg: Optional[dict]) -> "RecognitionQualityConfig":
+        cfg = cfg or {}
+        return cls(
+            min_det_score=float(cfg.get("min_det_score", 0.60)),
+            min_face_size=int(cfg.get("min_face_size", 80)),
+        )
+
+
+@dataclass
+class RecognitionTemporalConfig:
+    min_valid_samples: int = 3
+    max_samples_per_track: int = 8
+    top_k: int = 3
+
+    @classmethod
+    def from_dict(cls, cfg: Optional[dict]) -> "RecognitionTemporalConfig":
+        cfg = cfg or {}
+        return cls(
+            min_valid_samples=int(cfg.get("min_valid_samples", 3)),
+            max_samples_per_track=int(cfg.get("max_samples_per_track", 8)),
+            top_k=int(cfg.get("top_k", 3)),
+        )
+
+
+@dataclass
 class RecognitionConfig:
     threshold: float = 0.40
     cooldown_frames: int = 300
@@ -46,6 +76,8 @@ class RecognitionConfig:
     queue_size: int = 8
     log_to_db: bool = True
     event_to_db: bool = True
+    quality: RecognitionQualityConfig = field(default_factory=RecognitionQualityConfig)
+    temporal: RecognitionTemporalConfig = field(default_factory=RecognitionTemporalConfig)
 
     @classmethod
     def from_dict(cls, cfg: Optional[dict]) -> "RecognitionConfig":
@@ -59,6 +91,8 @@ class RecognitionConfig:
             queue_size=int(cfg.get("queue_size", 8)),
             log_to_db=bool(cfg.get("log_to_db", True)),
             event_to_db=bool(cfg.get("event_to_db", True)),
+            quality=RecognitionQualityConfig.from_dict(cfg.get("quality")),
+            temporal=RecognitionTemporalConfig.from_dict(cfg.get("temporal")),
         )
 
 

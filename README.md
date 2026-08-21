@@ -55,18 +55,23 @@ npm run dev                   # http://localhost:3000(已代理 /api 与 /ws)
 ```yaml
 # configs/default.yaml(节选)
 vision:
-  model_pack: buffalo_s
+  model_pack: buffalo_l
   device: cuda            # 推理默认 GPU;cpu/auto 可选
   det_size: [640, 640]
   det_interval: 2
   track: { iou_threshold: 0.3, max_lost: 15, min_hits: 2 }
-  recognition: { threshold: 0.40, cooldown_frames: 300, ... }
+  recognition:
+    threshold: 0.40
+    quality: { min_det_score: 0.60, min_face_size: 80 }
+    temporal: { min_valid_samples: 3, max_samples_per_track: 8, top_k: 3 }
 tasks:
   face_recognition: { enabled: true, class_path: app.tasks.builtin.face_recognition_task.FaceRecognitionTask }
   fall_detection:  { enabled: false, class_path: null }   # 扩展任务预留
 ```
 
 级联优先级:摄像头 `cameras.config`(JSONB)> profile 文件 > default.yaml。
+
+实时识别只使用通过质量筛选的检测帧，并按同一轨迹/候选身份聚合 Top-K 相似度后确认。未来如需切换 embedding 模型，建议为每条 embedding 保存 `model_pack`、模型指纹和维度，避免混用不同特征空间；本次不做数据库迁移或底库重建。
 
 ## 项目结构
 

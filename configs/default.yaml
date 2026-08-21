@@ -57,6 +57,13 @@ vision:
     queue_size: 8                  # 识别 worker 队列上限
     log_to_db: true                # 识别结果写入 recognition_logs
     event_to_db: true              # 识别事件写入 events 表
+    quality:
+      min_det_score: 0.60          # 实时识别检测置信度下限
+      min_face_size: 80            # 人脸框短边(px)下限
+    temporal:
+      min_valid_samples: 3         # 同一轨迹/身份达到多少有效样本后确认
+      max_samples_per_track: 8     # 同一轨迹最多保存的有效样本总数
+      top_k: 3                      # 稳定分数使用最高的 K 条样本
 
   registration:                    # 注册/追加特征质量筛选(仅注册路径生效,避免低质量 embedding 入库)
     min_face_size: 48              # 人脸框最短边(px),低于此拒绝

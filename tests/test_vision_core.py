@@ -158,3 +158,47 @@ def test_vision_config_from_yaml_shape():
     assert cfg.track.max_tracks == 10
     assert cfg.track.track_thresh == 0.4
     assert cfg.recognition.threshold == 0.55
+
+
+def test_recognition_quality_and_temporal_defaults():
+    cfg = VisionConfig.from_dict({})
+    assert cfg.recognition.quality.min_det_score == 0.60
+    assert cfg.recognition.quality.min_face_size == 80
+    assert cfg.recognition.temporal.min_valid_samples == 3
+    assert cfg.recognition.temporal.max_samples_per_track == 8
+    assert cfg.recognition.temporal.top_k == 3
+
+
+def test_recognition_quality_and_temporal_from_nested_dict():
+    cfg = VisionConfig.from_dict(
+        {
+            "recognition": {
+                "quality": {"min_det_score": 0.72, "min_face_size": 96},
+                "temporal": {
+                    "min_valid_samples": 4,
+                    "max_samples_per_track": 10,
+                    "top_k": 2,
+                },
+            }
+        }
+    )
+    assert cfg.recognition.quality.min_det_score == 0.72
+    assert cfg.recognition.quality.min_face_size == 96
+    assert cfg.recognition.temporal.min_valid_samples == 4
+    assert cfg.recognition.temporal.max_samples_per_track == 10
+    assert cfg.recognition.temporal.top_k == 2
+
+
+def test_tracker_carries_embedding_frame_id_only_from_detection():
+    from vision.tracker import ByteTracker
+
+    tracker = ByteTracker(TrackConfig(min_hits=1))
+    face = FaceResult(
+        bbox=(0, 0, 100, 100),
+        det_score=0.9,
+        embedding=[0.1] * 512,
+    )
+    first = tracker.update([face], 1)[0]
+    predicted = tracker.skip(2)[0]
+    assert first.embedding_frame_id == 1
+    assert predicted.embedding_frame_id == 1
