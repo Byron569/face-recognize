@@ -85,8 +85,23 @@ PUT /api/cameras/cam0/resolution
 | POST | `/api/faces/batch-import` | 批量导入同一人多图(multipart `name` + `images[]`) |
 | POST | `/api/faces/{id}/avatar` | 上传头像(multipart `image`,仅展示不提取特征) |
 | POST | `/api/faces/import-pickle` | 旧版 pickle 底库一次性导入,body `{"path": "face_db/identities.pkl"}` |
+| POST | `/api/faces/registration/analyze` | 摄像头/视频帧批量质量分析(不写库):multipart `frames[]` + `metadata_json`(frame_id/timestamp_ms/pose) → 各帧 accepted/reason/质量 + 推荐帧 |
+| POST | `/api/faces/registration/commit` | 摄像头/视频帧注册提交(multipart `mode=create|append` + `metadata_json` + `frames[]`):服务端复验后**原子入库**,append 身份不存在返回 404 |
 
 **注册流程**:上传图片 → 后端用共享 InsightFace 引擎提取最大脸的 512-d embedding → 入库 → 自动刷新内存底库快照(识别热路径即时生效)。
+
+
+### 摄像头/视频注册(实时动作引导)
+
+摄像头实时注册(前端 `getUserMedia` 取景)或本地视频文件注册,共用同一对接口,可**分角度采集多特征**:
+
+1. 浏览器实时取景,前端每 ~400ms 调 `POST /api/faces/detect`(已扩展返回 `kps/yaw_ratio/pitch_ratio`)判定头部姿态,引导用户完成 正脸 → 左转 → 右转 → 抬头 → 低头。
+2. 达标帧采集成 JPEG 后批量传 `POST /api/faces/registration/analyze`,逐帧做质量分析(单人脸/置信度/尺寸/键点/清晰度)并**按姿态分桶去重**推荐候选,不写库。
+3. 用户审核后调 `POST /api/faces/registration/commit`,服务端**重新复验**(不信任前端)后原子创建身份(`create`)或追加到已有身份(`append`),`source='camera'` 落库并刷新内存底库即时生效。
+
+- 规则:至少 `min_submit_frames`(默认 3)张合格且非重复帧;多人同框整帧拒绝;所有阈值在 `configs/default.yaml` 的 `vision.registration.video`。
+- 隐私:仅上传抽取的 JPEG 帧,**原始视频/摄像头流不落盘不上传**。
+- 错误:`422` 入参非法;`400` 有效帧不足/帧数超限;`404` append 身份不存在。
 
 ## 4. 识别记录 `/api/recognition-logs`
 

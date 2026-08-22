@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Card, Row, Col, Button, Input, Modal, message, Avatar, Tag, Space, Upload, Result, Descriptions, Grid } from 'antd';
-import { PlusOutlined, DeleteOutlined, SearchOutlined, UserOutlined, EditOutlined, UploadOutlined, ScanOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, SearchOutlined, UserOutlined, EditOutlined, UploadOutlined, ScanOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchFaces, deleteFace, batchImportFaces, searchFace, Identity } from '../api/faces';
 import FaceRegisterModal from '../components/FaceRegisterModal';
+import CameraRegisterModal from '../components/CameraRegisterModal';
 import FaceEditModal from '../components/FaceEditModal';
 
 const colors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'];
@@ -12,6 +13,7 @@ export default function FaceLibraryPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [cameraRegisterOpen, setCameraRegisterOpen] = useState(false);
   const [editFace, setEditFace] = useState<Identity | null>(null);
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchName, setBatchName] = useState('');
@@ -78,6 +80,9 @@ export default function FaceLibraryPage() {
           <Button icon={<UploadOutlined />} onClick={() => { setBatchOpen(true); setBatchResult(null); setBatchFiles([]); setBatchName(''); }} size={isMobile ? 'middle' : 'large'}>
             批量导入
           </Button>
+          <Button icon={<VideoCameraOutlined />} onClick={() => setCameraRegisterOpen(true)} size={isMobile ? 'middle' : 'large'}>
+            摄像头注册
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)} size={isMobile ? 'middle' : 'large'}>
             注册新人脸
           </Button>
@@ -138,6 +143,7 @@ export default function FaceLibraryPage() {
       )}
 
       <FaceRegisterModal open={registerOpen} onClose={() => setRegisterOpen(false)} />
+      <CameraRegisterModal open={cameraRegisterOpen} identities={faces} onClose={() => setCameraRegisterOpen(false)} />
       <FaceEditModal face={editFace} open={!!editFace} onClose={() => setEditFace(null)} />
 
       {/* 批量导入 Modal */}

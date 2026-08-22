@@ -23,7 +23,13 @@ export const detectFace = (formData: FormData) =>
   client.post<{
     width: number;
     height: number;
-    faces: Array<{ bbox: number[]; det_score: number }>;
+    faces: Array<{
+      bbox: number[];
+      det_score: number;
+      kps?: number[][];
+      yaw_ratio?: number;
+      pitch_ratio?: number;
+    }>;
   }>('/faces/detect', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });

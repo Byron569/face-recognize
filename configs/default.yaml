@@ -68,8 +68,16 @@ vision:
   registration:                    # 注册/追加特征质量筛选(仅注册路径生效,避免低质量 embedding 入库)
     min_face_size: 48              # 人脸框最短边(px),低于此拒绝
     min_det_score: 0.5             # 注册时检测置信度下限(0.5=与实时 det_thresh 一致;不同检测器标定不同,可调高收紧)
+    video:                           # 摄像头/视频帧注册(实时动作引导+批量分析入库)
+      sample_interval_ms: 500          # 实时分析节流间隔(前端参考)
+      max_analyze_frames: 30           # 单次 analyze 帧数上限
+      min_submit_frames: 3             # 提交下限
+      max_submit_frames: 8             # 提交上限
+      min_blur_variance: 55.0          # Laplacian 清晰度下限
+      max_yaw_ratio: 0.20              # 正脸 yaw 上限(超此为侧脸)
+      max_pitch_ratio: 0.28            # 正脸 pitch 上限
+      duplicate_similarity: 0.94       # 候选帧 embedding 余弦去重阈值
 
-# ── 可插拔任务(不写死: 启用/禁用 + 实现路径均可配置)─────────
 tasks:
   face_recognition:
     enabled: true

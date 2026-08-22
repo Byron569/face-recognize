@@ -14,6 +14,7 @@
 - **全参数配置化**:`default.yaml` → `profiles/{desktop,balanced,edge_minimal}.yaml` → 摄像头个性化 JSONB,代码零硬编码
 - **工业化工程**:Alembic 版本化迁移、api→services→repositories 分层、引擎池共享显存、断线自动重连、事件自动落库与 WS 推送
 - **流畅预览**:摄像头预览使用 `binary_jpeg_v1` 二进制 JPEG、单路编码一次、多订阅者单槽位丢旧帧,慢客户端不会拖住其他客户端
+- **摄像头实时注册**(动作引导五步):`getUserMedia` 实时取景 + 检测框叠加,系统引导 正脸→左转→右转→抬头→低头,达标自动采帧,多角度特征原子入库(`source='camera'`),即时生效;不含活体防伪,摄像头流不落盘
 
 ## 快速开始
 

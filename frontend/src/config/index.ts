@@ -90,3 +90,12 @@ export const eventMeta: Record<string, EventMeta> = {
   intrusion: { color: '#eb2f96', label: '闯入告警', icon: 'alert' },
   loitering: { color: '#722ed1', label: '徘徊告警', icon: 'clock' },
 };
+
+/** 摄像头注册参数(与后端 vision.registration.video 联动,此处为前端兜底常量)。 */
+export const registrationConfig = {
+  detectIntervalMs: 400,          // 实时 detect 节流
+  captureIntervalMs: 500,         // 达标自动采帧间隔
+  maxCapturedFrames: 30,          // 采集总上限(防失控)
+  jpegQuality: 0.85,
+  maxHeight: 720,
+} as const;

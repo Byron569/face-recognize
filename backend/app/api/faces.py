@@ -3,7 +3,7 @@
 from __future__ import annotations
 import os
 import uuid as uuid_mod
-from typing import List
+from typing import List, Literal
 
 import cv2
 import numpy as np
@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import resolve_project_path
 from ..deps import get_db
-from ..schemas.face import FaceSearchOut, IdentityListOut, IdentityOut, IdentityUpdateIn
+from ..schemas.face import (
+    FaceSearchOut,
+    IdentityListOut,
+    IdentityOut,
+    IdentityUpdateIn,
+    RegistrationAnalyzeOut,
+    RegistrationCommitOut,
+)
 from ..services.face_service import FaceService
 from ..services.model_manager import get_engine_pool
 from ..services.pipeline_manager import get_pipeline_manager
@@ -52,6 +59,134 @@ async def detect_faces(image: UploadFile = File(...), db: AsyncSession = Depends
     h, w = img.shape[:2]
     faces = await svc.detect_faces(img)
     return {"width": w, "height": h, "faces": faces}
+
+# ── 摄像头/视频实时注册(analyze 只分析不写库,commit 复验后原子入库) ──
+
+_POSE_TOKENS = {"frontal", "left", "right", "up", "down"}
+
+
+def _parse_registration_metadata(metadata_json: str, file_count: int) -> list[dict]:
+    """校验 metadata_json:JSON 数组,每元素 frame_id(str)/timestamp_ms(int>=0)/pose(五值之一);
+    长度必须 == file_count;frame_id 不得重复。非法抛 HTTPException(422)。"""
+    import json as _json
+
+    try:
+        meta = _json.loads(metadata_json)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, "metadata_json 不是合法 JSON 数组") from exc
+    if not isinstance(meta, list):
+        raise HTTPException(422, "metadata_json 必须是数组")
+    if len(meta) != file_count:
+        raise HTTPException(422, "metadata_json 长度必须等于上传帧数")
+    seen = set()
+    for m in meta:
+        frame_id = m.get("frame_id")
+        if not isinstance(frame_id, str) or not frame_id:
+            raise HTTPException(422, "frame_id 必须为非空字符串")
+        if frame_id in seen:
+            raise HTTPException(422, f"frame_id 重复: {frame_id}")
+        seen.add(frame_id)
+        ts = m.get("timestamp_ms")
+        if not isinstance(ts, int) or ts < 0:
+            raise HTTPException(422, "timestamp_ms 必须为非负整数")
+        pose = m.get("pose")
+        if pose not in _POSE_TOKENS:
+            raise HTTPException(422, f"非法 pose: {pose}")
+    return meta
+
+
+async def _decode_registration_files(files) -> list[np.ndarray]:
+    """逐个解码为 BGR ndarray;非法图片抛 400。"""
+    out = []
+    for f in files:
+        data = await f.read()
+        img = _decode_image(bytes(data))
+        out.append(img)
+    return out
+
+
+@router.post("/faces/registration/analyze", response_model=RegistrationAnalyzeOut)
+async def analyze_registration_frames(
+    frames: List[UploadFile] = File(...),
+    metadata_json: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量质量分析(不写库):摄像头实时采集的候选帧 → 返回各帧质量与推荐帧。"""
+    meta = _parse_registration_metadata(metadata_json, len(frames))
+    images = await _decode_registration_files(frames)
+    svc = _get_service(db)
+    try:
+        result = await svc.analyze_registration_frames(
+            list(zip(images, [m["frame_id"] for m in meta],
+                     [m["timestamp_ms"] for m in meta], [m["pose"] for m in meta]))
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+    accepted = result["accepted"]
+    from ..services.video_registration import CandidateFrame
+
+    frames_out = []
+    for m, img in zip(meta, images):
+        # 命中 accepted 则给详细质量,否则查 rejected reason
+        acc = next((a for a in accepted if a.frame_id == m["frame_id"]), None)
+        if acc is not None:
+            frames_out.append({
+                "frame_id": acc.frame_id, "timestamp_ms": acc.timestamp_ms,
+                "accepted": True, "reason": None, "pose": acc.pose,
+                "bbox": list(acc.bbox), "det_score": acc.det_score,
+                "yaw_ratio": acc.yaw_ratio, "pitch_ratio": acc.pitch_ratio,
+                "blur_score": acc.blur_score, "quality_score": acc.quality_score,
+            })
+        else:
+            rej = next((r for r in result["rejected"] if r["frame_id"] == m["frame_id"]), None)
+            frames_out.append({
+                "frame_id": m["frame_id"], "timestamp_ms": m["timestamp_ms"],
+                "accepted": False, "reason": rej["reason"] if rej else "rejected",
+                "pose": m["pose"], "bbox": None, "det_score": None,
+                "yaw_ratio": None, "pitch_ratio": None, "blur_score": None, "quality_score": None,
+            })
+    return {
+        "sampled_count": result["sampled"],
+        "accepted_count": len(accepted),
+        "recommended_frame_ids": result["recommended_frame_ids"],
+        "frames": frames_out,
+    }
+
+
+@router.post("/faces/registration/commit", response_model=RegistrationCommitOut, status_code=201)
+async def commit_registration_frames(
+    mode: Literal["create", "append"] = Form(...),
+    name: str | None = Form(None),
+    notes: str | None = Form(None),
+    identity_id: uuid_mod.UUID | None = Form(None),
+    frames: List[UploadFile] = File(...),
+    metadata_json: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """提交注册:服务端复验后原子入库(create 新身份 / append 已有身份)。"""
+    if mode == "create" and not name:
+        raise HTTPException(422, "create 模式必须提供姓名")
+    if mode == "append" and identity_id is None:
+        raise HTTPException(422, "append 模式必须提供 identity_id")
+    meta = _parse_registration_metadata(metadata_json, len(frames))
+    images = await _decode_registration_files(frames)
+    svc = _get_service(db)
+    try:
+        result = await svc.commit_registration_frames(
+            mode=mode,
+            name=name,
+            notes=notes,
+            identity_id=identity_id,
+            frames=list(zip(images, [m["frame_id"] for m in meta],
+                            [m["timestamp_ms"] for m in meta], [m["pose"] for m in meta])),
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "identity_not_found" in msg:
+            raise HTTPException(404, "Identity not found") from exc
+        raise HTTPException(400, msg) from exc
+    return result
+
 
 
 @router.get("/faces", response_model=IdentityListOut)

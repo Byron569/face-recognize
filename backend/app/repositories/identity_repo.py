@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import uuid
+from dataclasses import dataclass
 from typing import Optional
 
 from sqlalchemy import delete, func, select
@@ -9,6 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..models.identity import Identity, IdentityEmbedding
+
+
+@dataclass(frozen=True)
+class EmbeddingInput:
+    """待写入的一条 embedding(来源 + 质量分)。"""
+
+    embedding: list[float]
+    source: str = "image"
+    quality_score: float = 0.0
 
 
 class IdentityRepository:
@@ -81,6 +91,55 @@ class IdentityRepository:
         )
         await self.db.commit()
         return (result.rowcount or 0) > 0
+
+    # ── 原子批量写入(摄像头/视频注册用)────────────────────
+    @staticmethod
+    def _embedding_rows(
+        identity_id: uuid.UUID, items: list[EmbeddingInput]
+    ) -> list[IdentityEmbedding]:
+        return [
+            IdentityEmbedding(
+                identity_id=identity_id,
+                embedding=list(item.embedding),
+                source=item.source,
+                quality_score=item.quality_score,
+            )
+            for item in items
+        ]
+
+    async def create_with_embeddings(
+        self, identity: Identity, items: list[EmbeddingInput]
+    ) -> Identity:
+        """原子创建身份 + 全部 embedding(单事务);items 为空时 rollback 并抛错。"""
+        if not items:
+            raise ValueError("create_with_embeddings requires at least one embedding")
+        try:
+            self.db.add(identity)
+            await self.db.flush()
+            self.db.add_all(self._embedding_rows(identity.id, items))
+            await self.db.commit()
+            await self.db.refresh(identity)
+            return identity
+        except Exception:
+            await self.db.rollback()
+            raise
+
+    async def add_many_embeddings(
+        self, identity_id: uuid.UUID, items: list[EmbeddingInput]
+    ) -> bool:
+        """原子批量追加 embedding;身份不存在返回 False;单事务,异常 rollback。"""
+        if not items:
+            return True
+        existing = await self.db.get(Identity, identity_id)
+        if existing is None:
+            return False
+        try:
+            self.db.add_all(self._embedding_rows(identity_id, items))
+            await self.db.commit()
+            return True
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def all_embeddings(self) -> list[tuple[uuid.UUID, str, list[float]]]:
         """拉取全部 (identity_id, name, embedding),供内存底库快照与向量化检索。"""
