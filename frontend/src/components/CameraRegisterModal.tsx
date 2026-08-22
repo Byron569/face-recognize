@@ -58,7 +58,11 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
   const [wsPreviewUrl, setWsPreviewUrl] = useState<string | null>(null);
   /** 单方向重采模式:非 null 表示当前只对某 pose 采集单帧(审核页进入)。 */
   const [recapturePose, setRecapturePose] = useState<PoseName | null>(null);
-  const [form] = Form.useForm();
+  // 姓名/备注/追加身份用独立 state 保存(Form 只在 setup 阶段渲染,进入采集后表单已卸载,
+  // 提交阶段再读 form 会拿不到值;故不依赖 Form 提交)
+  const [nameInput, setNameInput] = useState('');
+  const [notesInput, setNotesInput] = useState('');
+  const [appendId, setAppendId] = useState<string | undefined>(undefined);
   const queryClient = useQueryClient();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -440,23 +444,19 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       return;
     }
     if (mode === 'create') {
-      // 用 getFieldsValue 直接取(form 在 review 阶段未挂载,validateFields 的 promise 可能 reject),
-      // 不再依赖表单校验的异步结果;姓名为空时显式提示。
-      const values = form.getFieldsValue();
-      const nm = String(values.name ?? '').trim();
+      const nm = nameInput.trim();
       if (!nm) {
         message.error('请先在设置页填写姓名');
         setStage('setup');
         return;
       }
-      commitMutation.mutate({ mode, name: nm, notes: String(values.notes ?? ''), frames });
+      commitMutation.mutate({ mode, name: nm, notes: notesInput, frames });
     } else {
-      const id = form.getFieldValue('identityId');
-      if (!id) {
+      if (!appendId) {
         message.warning('请选择要追加的身份');
         return;
       }
-      commitMutation.mutate({ mode, identityId: id, frames });
+      commitMutation.mutate({ mode, identityId: appendId, frames });
     }
   };
 
@@ -501,7 +501,7 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     >
       {stage === 'setup' && (
         <div>
-          <Form form={form} layout="vertical">
+          <Form layout="vertical">
             <Form.Item label="视频源">
               <Select
                 value={sourceSelectValue}
@@ -542,23 +542,40 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
             </Form.Item>
             {mode === 'create' ? (
               <>
-                <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
-                  <Input placeholder="输入姓名" />
+                <Form.Item label="姓名" required>
+                  <Input placeholder="输入姓名" value={nameInput} onChange={(e) => setNameInput(e.target.value)} />
                 </Form.Item>
-                <Form.Item name="notes" label="备注">
-                  <Input.TextArea rows={2} />
+                <Form.Item label="备注">
+                  <Input.TextArea rows={2} value={notesInput} onChange={(e) => setNotesInput(e.target.value)} />
                 </Form.Item>
               </>
             ) : (
-              <Form.Item name="identityId" label="选择身份" rules={[{ required: true, message: '请选择' }]}>
+              <Form.Item label="选择身份" required>
                 <Select
+                  value={appendId}
+                  onChange={(v: string) => setAppendId(v)}
                   options={(identities || []).map((i) => ({ value: i.id, label: i.name }))}
                   placeholder="选择要追加特征的身份"
                 />
               </Form.Item>
             )}
           </Form>
-          <Button type="primary" icon={<VideoCameraOutlined />} onClick={() => void startCapture()} block>
+          <Button
+            type="primary"
+            icon={<VideoCameraOutlined />}
+            onClick={() => {
+              if (mode === 'create' && !nameInput.trim()) {
+                message.error('请先填写姓名');
+                return;
+              }
+              if (mode === 'append' && !appendId) {
+                message.error('请先选择要追加的身份');
+                return;
+              }
+              void startCapture();
+            }}
+            block
+          >
             开始采集
           </Button>
           <div style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
