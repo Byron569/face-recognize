@@ -66,12 +66,13 @@ def test_compute_pose_ratios_profile_has_large_yaw():
 
 
 def test_classify_pose_all_five_regions():
-    # 左右约定:yaw>0 = 用户向左转头(left)
+    # 左右约定:yaw>0 = 用户向左转头(left);yaw<0 = right
+    # 上下约定:抬头 → pitch 为正(up);低头 → pitch 为负(down)
     assert classify_pose(0.0, 0.0, 0.2, 0.28) == "frontal"
     assert classify_pose(0.3, 0.0, 0.2, 0.28) == "left"
     assert classify_pose(-0.3, 0.0, 0.2, 0.28) == "right"
-    assert classify_pose(0.0, -0.3, 0.2, 0.28) == "up"
-    assert classify_pose(0.0, 0.3, 0.2, 0.28) == "down"
+    assert classify_pose(0.0, 0.3, 0.2, 0.28) == "up"
+    assert classify_pose(0.0, -0.3, 0.2, 0.28) == "down"
 
 
 def test_compute_pose_ratios_left_turn_is_positive():

@@ -6,7 +6,7 @@ import { VideoCameraOutlined, CameraOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CameraCaptureSource } from '../registration/CameraCaptureSource';
 import { SystemCameraSource } from '../registration/SystemCameraSource';
-import { POSE_STEPS, checkPose, shouldAdvanceStep } from '../registration/poseEngine';
+import { POSE_STEPS, checkPose, shouldAdvanceStep, REASON_LABELS } from '../registration/poseEngine';
 import type {
   CapturedFrame, PoseName, AnalyzeResult, CommitResult, SelectedSource,
 } from '../registration/types';
@@ -35,7 +35,7 @@ interface DetState {
   imgH: number;
 }
 
-/** 摄像头实时注册弹窗:视频源选择 → 实时取景 → 五步动作引导自动采帧 → 审核 → 原子入库。
+/** 摄像头实时注册弹窗:视频源选择 → 实时取景 → 五步动作引导自动采帧 → 审核(可单方向重采)→ 原子入库。
  * 视频源支持两类:本机摄像头(getUserMedia)与系统监控摄像头(后端 WS 流 + snapshot 采帧)。
  */
 export default function CameraRegisterModal({ open, identities, onClose }: Props) {
@@ -56,6 +56,8 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     kind: 'device', deviceId: '__default__', cameraId: '',
   });
   const [wsPreviewUrl, setWsPreviewUrl] = useState<string | null>(null);
+  /** 单方向重采模式:非 null 表示当前只对某 pose 采集单帧(审核页进入)。 */
+  const [recapturePose, setRecapturePose] = useState<PoseName | null>(null);
   const [form] = Form.useForm();
   const queryClient = useQueryClient();
 
@@ -70,12 +72,14 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
   const stepIndexRef = useRef(0);
   const detRef = useRef<DetState | null>(null);
   const selectedRef = useRef<SelectedSource>(selected);
+  const recapturePoseRef = useRef<PoseName | null>(null);
 
   capturedRef.current = captured;
   perPoseRef.current = perPose;
   stepIndexRef.current = stepIndex;
   detRef.current = det;
   selectedRef.current = selected;
+  recapturePoseRef.current = recapturePose;
 
   // ── 系统摄像头 WS 连接(hook 顶层无条件调用,path 为 null 则不连) ──
   const wsPath =
@@ -89,7 +93,6 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       const src = systemSourceRef.current;
       if (!src) return;
       src.offer(data);
-      // 预览:最新帧 → objectURL(函数式更新里 revoke 旧 URL,避免闭包旧值)
       const f = src.latestFrame;
       if (f) {
         setWsPreviewUrl((old) => {
@@ -118,7 +121,6 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     };
   }, [open]);
 
-  // ── 供两个分支共用的检测帧获取 ──
   const getDetectBlob = useCallback((): Blob | null => {
     if (selectedRef.current.kind === 'system') {
       return systemSourceRef.current?.getDetectFrame() ?? null;
@@ -126,17 +128,17 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     return sourceRef.current?.captureFrame(registrationConfig.maxHeight, registrationConfig.jpegQuality) ?? null;
   }, []);
 
-  // ── 供两个分支共用的高质量采帧(系统模式走 snapshot 原始帧) ──
   const grabRegFrame = useCallback(async (): Promise<Blob | null> => {
     if (selectedRef.current.kind === 'system') {
       const src = systemSourceRef.current;
       if (!src) return null;
-      try { return await src.captureFrame(); } catch { return null; } // snapshot 404 静默跳过本轮
+      try { return await src.captureFrame(); } catch { return null; }
     }
     return sourceRef.current?.captureFrame(registrationConfig.maxHeight, registrationConfig.jpegQuality) ?? null;
   }, []);
 
-  const finishCapture = useCallback((token: number) => {
+  /** 按内核清理定时器与音视频源(不含状态重置)。 */
+  const cleanupSources = useCallback(() => {
     if (detectTimerRef.current) {
       clearInterval(detectTimerRef.current);
       detectTimerRef.current = null;
@@ -146,46 +148,122 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     systemSourceRef.current?.close();
     systemSourceRef.current = null;
     setWsPreviewUrl((old) => { if (old) URL.revokeObjectURL(old); return null; });
+  }, []);
+
+  /** 打开当前选中源(device/system 双分支),返回是否成功。失败已自行回退 UI。 */
+  const openActiveSource = useCallback(async (token: number): Promise<boolean> => {
+    if (selectedRef.current.kind === 'system') {
+      const cam = sysCameras.find((c) => c.id === selectedRef.current.cameraId);
+      if (!cam) {
+        if (token === runTokenRef.current) { message.error('请先选择系统摄像头'); setStage('setup'); }
+        return false;
+      }
+      if (cam.status !== 'running') {
+        try { await startCamera(cam.id); } catch (e: any) {
+          if (token === runTokenRef.current) {
+            message.error(e?.response?.data?.detail || '摄像头启动失败');
+            setStage('setup');
+          }
+          return false;
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        if (token !== runTokenRef.current) return false;
+      }
+      systemSourceRef.current = new SystemCameraSource(cam.id);
+      sourceRef.current = null;
+      return true;
+    }
+
+    const video = videoRef.current;
+    if (!video) {
+      if (token === runTokenRef.current) { message.error('视频组件初始化失败,请重试'); setStage('setup'); }
+      return false;
+    }
+    const src = new CameraCaptureSource(video, selectedRef.current.deviceId);
+    sourceRef.current = src;
+    try {
+      await src.open();
+    } catch (err: any) {
+      if (token === runTokenRef.current) {
+        const name = (err as any)?.name;
+        const msg =
+          name === 'NotAllowedError' ? '摄像头权限被拒绝,请在浏览器地址栏允许后重试'
+          : name === 'NotFoundError' ? '未找到所选摄像头,可能已被拔出,请重新选择'
+          : name === 'OverconstrainedError' ? '所选摄像头不支持当前参数,请换一个'
+          : ((err as Error)?.message || '无法访问摄像头');
+        message.error(msg);
+        if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+          CameraCaptureSource.listDevices().then(setDevices).catch(() => {});
+        }
+        setStage('setup');
+      }
+      return false;
+    }
+    CameraCaptureSource.listDevices().then(setDevices).catch(() => {});
+    if (token !== runTokenRef.current) return false;
+    return true;
+  }, [sysCameras]);
+
+  /** 停止检测循环并仅关闭源,不触发 runAnalyze(重采用到)。 */
+  const stopCaptureAndClose = useCallback(() => {
+    cleanupSources();
+  }, [cleanupSources]);
+
+  const finishCapture = useCallback((token: number) => {
+    cleanupSources();
     if (token !== runTokenRef.current) return;
     runAnalyze(capturedRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cleanupSources]);
 
   const maybeCapture = useCallback(async (token: number, pose: PoseName) => {
     const now = Date.now();
     if (now - lastCaptureRef.current < registrationConfig.captureIntervalMs) return;
-    const total = capturedRef.current.length;
-    if (total >= registrationConfig.maxCapturedFrames) {
-      finishCapture(token);
-      return;
+
+    // 重采模式:跳过同姿态去重与 maxCapturedFrames 上限(用户明确要替换旧帧)
+    const isRecapture = recapturePoseRef.current !== null;
+    if (!isRecapture) {
+      const total = capturedRef.current.length;
+      if (total >= registrationConfig.maxCapturedFrames) {
+        finishCapture(token);
+        return;
+      }
+      const curDet = detRef.current;
+      if (curDet) {
+        const dup = capturedRef.current.some((f) =>
+          f.pose === pose
+          && f.yawRatio !== undefined
+          && Math.abs(f.yawRatio - curDet.yawRatio) < 0.06
+          && Math.abs((f.pitchRatio ?? 0) - curDet.pitchRatio) < 0.06,
+        );
+        if (dup) return;
+      }
     }
-    // 同姿态重复帧拦截:当前 yaw/pitch 与同 pose 已采帧几乎一致(差异<阈值)则跳过,
-    // 避免连续采到几乎相同的脸(配合后端 yaw 符号修复,防止出现两张同侧脸)
-    const curDet = detRef.current;
-    if (curDet) {
-      const dup = capturedRef.current.some((f) =>
-        f.pose === pose
-        && f.yawRatio !== undefined
-        && Math.abs(f.yawRatio - curDet.yawRatio) < 0.06
-        && Math.abs((f.pitchRatio ?? 0) - curDet.pitchRatio) < 0.06,
-      );
-      if (dup) return;
-    }
+
     const blob = await grabRegFrame();
     if (!blob) return;
     lastCaptureRef.current = now;
+    const curDetBack = detRef.current;
     const frame: CapturedFrame = {
       frameId: `c${now}_${Math.random().toString(36).slice(2, 6)}`,
       timestampMs: now,
       pose,
       blob,
       previewUrl: URL.createObjectURL(blob),
-      yawRatio: curDet?.yawRatio,
-      pitchRatio: curDet?.pitchRatio,
+      yawRatio: curDetBack?.yawRatio,
+      pitchRatio: curDetBack?.pitchRatio,
     };
     const next = [...capturedRef.current, frame];
     setCaptured(next);
     setPerPose((prev) => ({ ...prev, [pose]: (prev[pose] || 0) + 1 }));
+
+    if (isRecapture) {
+      cleanupSources();
+      if (token !== runTokenRef.current) return;
+      await commitRecapturedFrame(token, frame);
+      return;
+    }
+
     if (shouldAdvanceStep(next.filter((nf) => nf.pose === pose).length)) {
       const nextIdx = stepIndexRef.current + 1;
       if (nextIdx >= POSE_STEPS.length) {
@@ -195,13 +273,42 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       setStepIndex(nextIdx);
       setHint(POSE_STEPS[nextIdx].instruction);
     }
-  }, [grabRegFrame, finishCapture]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grabRegFrame, finishCapture, cleanupSources]);
+
+  /** 重采模式:单帧分析 → 替换该方向旧帧 → 回审核页。 */
+  const commitRecapturedFrame = useCallback(async (token: number, frame: CapturedFrame) => {
+    const pose = recapturePoseRef.current;
+    try {
+      const res = await analyzeRegistrationFrames([frame]);
+      const fr = res.data.frames?.[0];
+      frame.accepted = fr?.accepted ?? false;
+      frame.reason = fr?.reason ?? null;
+      frame.qualityScore = fr?.quality_score ?? null;
+    } catch {
+      frame.accepted = false;
+      frame.reason = null;
+      frame.qualityScore = null;
+    }
+    if (token !== runTokenRef.current) return;
+    if (!pose) { setRecapturePose(null); setStage('review'); return; }
+
+    const removed = capturedRef.current.filter((f) => f.pose === pose && f.frameId !== frame.frameId);
+    removed.forEach((f) => URL.revokeObjectURL(f.previewUrl));
+    const others = capturedRef.current.filter((f) => f.pose !== pose);
+    setCaptured([...others, frame]);
+    setRecapturePose(null);
+    setStage('review');
+    if (frame.accepted !== true) {
+      message.warning(`该帧未通过校验(${REASON_LABELS[frame.reason ?? ''] ?? '原因未知'}),可再次重采`);
+    }
+  }, []);
 
   const startDetectLoop = useCallback((token: number) => {
     detectTimerRef.current = setInterval(async () => {
       const tokenNow = runTokenRef.current;
       const frame = getDetectBlob();
-      if (!frame) return; // 系统模式无新帧 / 本机模式未就绪 → 直接返回,不改 hint
+      if (!frame) return;
       const fd = new FormData();
       fd.append('image', frame, 'cam.jpg');
       try {
@@ -223,7 +330,10 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
           imgH: res.data.height || 1,
         };
         setDet(d);
-        const step = POSE_STEPS[stepIndexRef.current];
+        // 重采模式固定目标步骤;正常模式按 stepIndex
+        const step = recapturePoseRef.current
+          ? POSE_STEPS.find((s) => s.pose === recapturePoseRef.current)!
+          : POSE_STEPS[stepIndexRef.current];
         const chk = checkPose(step, { yawRatio: d.yawRatio, pitchRatio: d.pitchRatio, detScore: d.detScore, bbox: d.bbox });
         setHint(chk.hint);
         if (chk.ok && chk.capture) void maybeCapture(tokenNow, step.pose);
@@ -249,66 +359,27 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     setStage('capturing');
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     if (token !== runTokenRef.current) return;
-
-    // 分支一:系统监控摄像头(浏览器无法直连,走后端 WS + snapshot)
-    if (selectedRef.current.kind === 'system') {
-      const cam = sysCameras.find((c) => c.id === selectedRef.current.cameraId);
-      if (!cam) {
-        if (token === runTokenRef.current) { message.error('请先选择系统摄像头'); setStage('setup'); }
-        return;
-      }
-      setHint('正在连接摄像头…');
-      // 未运行则自动启动(不自动停止——系统摄像头归设置页管)
-      if (cam.status !== 'running') {
-        try { await startCamera(cam.id); } catch (e: any) {
-          if (token === runTokenRef.current) {
-            message.error(e?.response?.data?.detail || '摄像头启动失败');
-            setStage('setup');
-          }
-          return;
-        }
-        await new Promise((r) => setTimeout(r, 1500)); // 等推流起来
-        if (token !== runTokenRef.current) return;
-      }
-      systemSourceRef.current = new SystemCameraSource(cam.id);
-      sourceRef.current = null;
-      setHint(POSE_STEPS[0].instruction);
-      startDetectLoop(token);
-      return;
-    }
-
-    // 分支二:本机摄像头(getUserMedia)
-    const video = videoRef.current;
-    if (!video) {
-      if (token === runTokenRef.current) { message.error('视频组件初始化失败,请重试'); setStage('setup'); }
-      return;
-    }
-    const src = new CameraCaptureSource(video, selectedRef.current.deviceId);
-    sourceRef.current = src;
-    try {
-      await src.open();
-    } catch (err: any) {
-      if (token === runTokenRef.current) {
-        const name = (err as any)?.name;
-        const msg =
-          name === 'NotAllowedError' ? '摄像头权限被拒绝,请在浏览器地址栏允许后重试'
-          : name === 'NotFoundError' ? '未找到所选摄像头,可能已被拔出,请重新选择'
-          : name === 'OverconstrainedError' ? '所选摄像头不支持当前参数,请换一个'
-          : ((err as Error)?.message || '无法访问摄像头');
-        message.error(msg);
-        if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-          CameraCaptureSource.listDevices().then(setDevices).catch(() => {});
-        }
-        setStage('setup');
-      }
-      return;
-    }
-    // open 成功 = 已授权,重枚举刷新 label
-    CameraCaptureSource.listDevices().then(setDevices).catch(() => {});
-    if (token !== runTokenRef.current) return;
+    const ok = await openActiveSource(token);
+    if (!ok || token !== runTokenRef.current) return;
     setHint(POSE_STEPS[0].instruction);
     startDetectLoop(token);
-  }, [sysCameras, startDetectLoop]);
+  }, [openActiveSource, startDetectLoop]);
+
+  /** 审核页进入单方向重采:复用 capturing 状态机,固定该 pose 采一帧。 */
+  const startRecapture = useCallback(async (pose: PoseName) => {
+    runTokenRef.current += 1;
+    const token = runTokenRef.current;
+    setRecapturePose(pose);
+    setDet(null);
+    setHint('正在启动摄像头…');
+    setStage('capturing');
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    if (token !== runTokenRef.current) { setRecapturePose(null); return; }
+    const ok = await openActiveSource(token);
+    if (!ok || token !== runTokenRef.current) { setRecapturePose(null); return; }
+    setHint(POSE_STEPS.find((s) => s.pose === pose)!.instruction);
+    startDetectLoop(token);
+  }, [openActiveSource, startDetectLoop]);
 
   const runAnalyze = useCallback(async (frames: CapturedFrame[]) => {
     if (frames.length === 0) {
@@ -317,16 +388,21 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     }
     try {
       const res = await analyzeRegistrationFrames(frames);
-      setAnalysis(res.data);
-      const okCount = res.data.accepted_count;
-      if (okCount < 3) {
-        message.warning(`有效帧不足(${okCount}),已保留已采集帧,继续采集`);
-        void startCapture(true);
-        return;
-      }
-      const recIds = new Set(res.data.recommended_frame_ids);
-      setCaptured(frames.filter((f) => recIds.has(f.frameId)));
+      // 合并分析结论到每帧,全量保留(不再按 recommended 过滤——审核页要展示全部方向)
+      const byId = new Map(res.data.frames.map((fr) => [fr.frame_id, fr]));
+      const merged = frames.map((f) => {
+        const fr = byId.get(f.frameId);
+        return {
+          ...f,
+          accepted: fr?.accepted ?? false,
+          reason: fr?.reason ?? null,
+          qualityScore: fr?.quality_score ?? null,
+        };
+      });
+      setCaptured(merged);
       setStage('review');
+      const ok = merged.filter((f) => f.accepted === true).length;
+      if (ok < 3) message.warning(`通过质量校验 ${ok}/3 帧,请对未通过的方向重新采集`);
     } catch (err: any) {
       message.error(err?.response?.data?.detail || '分析失败');
       void startCapture(true);
@@ -346,9 +422,9 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
   });
 
   const handleSubmit = () => {
-    const frames = capturedRef.current;
+    const frames = capturedRef.current.filter((f) => f.accepted === true);
     if (frames.length < 3) {
-      message.warning('至少保留 3 帧');
+      message.warning('至少 3 帧通过质量校验');
       return;
     }
     if (mode === 'create') {
@@ -381,6 +457,8 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
   }, [open]);
 
   const detect = det as DetState | null;
+  const recapturing = recapturePose !== null;
+  const acceptedCount = captured.filter((f) => f.accepted === true).length;
 
   const sourceSelectValue = selected.kind === 'device' ? selected.deviceId : `sys:${selected.cameraId}`;
   const onSourceChange = (v: string) => {
@@ -397,7 +475,7 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     <Modal
       title={<Space><VideoCameraOutlined />摄像头实时注册</Space>}
       open={open}
-      width={560}
+      width={640}
       footer={null}
       onCancel={onClose}
       destroyOnClose
@@ -501,86 +579,119 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
               )}
             </div>
             <div style={{ position: 'absolute', top: 8, left: 12, right: 12, textAlign: 'center', pointerEvents: 'none' }}>
+              {recapturing && (
+                <Tag color="orange" style={{ marginRight: 4 }}>重采:{POSE_STEPS.find((s) => s.pose === recapturePose)?.shortLabel}</Tag>
+              )}
               <Tag color="blue" style={{ fontSize: 14, padding: '4px 12px', maxWidth: '100%', whiteSpace: 'normal' }}>{hint}</Tag>
             </div>
+            {/* 姿态实时调试数值(在镜像 wrapper 外,避免被翻转成反字) */}
+            {detect && (
+              <div style={{
+                position: 'absolute', bottom: 8, right: 12, pointerEvents: 'none',
+                fontFamily: 'monospace', fontSize: 12, color: 'rgba(255,255,255,0.85)',
+                background: 'rgba(0,0,0,0.45)', padding: '2px 8px', borderRadius: 4,
+              }}>
+                yaw {detect.yawRatio >= 0 ? '+' : ''}{detect.yawRatio.toFixed(2)}  pitch {detect.pitchRatio >= 0 ? '+' : ''}{detect.pitchRatio.toFixed(2)}
+              </div>
+            )}
           </div>
-          <Steps
-            current={stepIndex}
-            items={POSE_STEPS.map((s) => ({
-              title: s.shortLabel,
-              description: `${(perPose[s.pose] || 0)} 帧`,
-            }))}
-            size="small"
-            style={{ marginTop: 12 }}
-          />
+          {!recapturing && (
+            <Steps
+              current={stepIndex}
+              items={POSE_STEPS.map((s) => ({
+                title: s.shortLabel,
+                description: `${(perPose[s.pose] || 0)} 帧`,
+              }))}
+              size="small"
+              style={{ marginTop: 12 }}
+            />
+          )}
           <Space style={{ marginTop: 12 }} wrap>
             <Button
               icon={<CameraOutlined />}
-              onClick={() => void maybeCapture(runTokenRef.current, POSE_STEPS[stepIndexRef.current].pose)}
+              onClick={() => void maybeCapture(
+                runTokenRef.current,
+                recapturePose ?? POSE_STEPS[stepIndexRef.current].pose,
+              )}
             >
               手动抓拍
             </Button>
-            <Button onClick={() => {
-              const idx = stepIndexRef.current;
-              if (idx + 1 < POSE_STEPS.length) setStepIndex(idx + 1);
-              else finishCapture(runTokenRef.current);
-            }}>
-              跳过此动作
-            </Button>
+            {!recapturing && (
+              <Button onClick={() => {
+                const idx = stepIndexRef.current;
+                if (idx + 1 < POSE_STEPS.length) setStepIndex(idx + 1);
+                else finishCapture(runTokenRef.current);
+              }}>
+                跳过此动作
+              </Button>
+            )}
             <Button danger onClick={() => {
-              if (detectTimerRef.current) clearInterval(detectTimerRef.current);
-              sourceRef.current?.close();
-              sourceRef.current = null;
-              systemSourceRef.current?.close();
-              systemSourceRef.current = null;
-              setWsPreviewUrl((old) => { if (old) URL.revokeObjectURL(old); return null; });
-              setCaptured([]);
-              setStage('setup');
+              cleanupSources();
+              if (recapturing) {
+                setRecapturePose(null);
+                setStage('review');   // 重采取消:回审核页,不清空已采帧
+              } else {
+                setCaptured([]);
+                setStage('setup');
+              }
             }}>
               取消
             </Button>
-            <Button type="primary" onClick={() => finishCapture(runTokenRef.current)}>
-              完成采集({captured.length})
-            </Button>
+            {!recapturing && (
+              <Button type="primary" onClick={() => finishCapture(runTokenRef.current)}>
+                完成采集({captured.length})
+              </Button>
+            )}
           </Space>
         </div>
       )}
 
       {stage === 'review' && (
         <div>
-          <div style={{ marginBottom: 12, color: '#888' }}>已选 {captured.length} 帧,至少 3 帧可提交</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {captured.map((f) => (
-              <div key={f.frameId} style={{ position: 'relative', width: 150 }}>
-                <img src={f.previewUrl} alt={f.pose} style={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 6 }} />
-                <Tag color="green" style={{ position: 'absolute', top: 4, left: 4 }}>{f.pose}</Tag>
-                {f.yawRatio !== undefined && (
-                  <Tag color="blue" style={{ position: 'absolute', bottom: 4, left: 4, fontSize: 11 }}>
-                    yaw {f.yawRatio >= 0 ? '+' : ''}{f.yawRatio.toFixed(2)}
-                  </Tag>
-                )}
-                <Button
-                  size="small"
-                  danger
-                  style={{ position: 'absolute', top: 4, right: 4 }}
-                  onClick={() => {
-                    setCaptured((prev) => prev.filter((x) => x.frameId !== f.frameId));
-                    URL.revokeObjectURL(f.previewUrl);
-                  }}
-                >
-                  删除
-                </Button>
-              </div>
-            ))}
+          <div style={{ marginBottom: 12, color: '#888' }}>
+            通过质量校验 {acceptedCount}/3 帧 · 共 {captured.length} 帧 · 每个方向可单独重采/补拍
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+            {POSE_STEPS.map((step) => {
+              const framesOf = captured.filter((f) => f.pose === step.pose);
+              return (
+                <div key={step.pose} style={{ width: 180, textAlign: 'center' }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{step.shortLabel}</div>
+                  {framesOf.length === 0 ? (
+                    <div style={{ width: '100%', height: 110, borderRadius: 6, background: '#f5f5f5',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb' }}>
+                      未采集
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {framesOf.map((f) => (
+                        <div key={f.frameId} style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                          <img src={f.previewUrl} alt={f.pose}
+                            style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 6 }} />
+                          <Tag color={f.accepted === true ? 'green' : 'red'}
+                            style={{ position: 'absolute', top: 2, left: 2, fontSize: 11 }}>
+                            {f.accepted === true ? `✓${(f.qualityScore ?? 0).toFixed(2)}` : `✗${REASON_LABELS[f.reason ?? ''] ?? '未通过'}`}
+                          </Tag>
+                          <Button size="small" danger type="text" style={{ position: 'absolute', top: 2, right: 2 }}
+                            onClick={() => {
+                              setCaptured((prev) => prev.filter((x) => x.frameId !== f.frameId));
+                              URL.revokeObjectURL(f.previewUrl);
+                            }}>×</Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <Button size="small" block style={{ marginTop: 4 }}
+                    onClick={() => void startRecapture(step.pose)}>
+                    {framesOf.length ? '重新采集' : '补拍'}
+                  </Button>
+                </div>
+              );
+            })}
           </div>
           <Space style={{ marginTop: 16 }}>
-            <Button onClick={() => { setCaptured([]); setStage('setup'); }}>重新采集</Button>
-            <Button
-              type="primary"
-              disabled={captured.length < 3}
-              loading={commitMutation.isPending}
-              onClick={handleSubmit}
-            >
+            <Button onClick={() => { setCaptured([]); setStage('setup'); }}>全部重采</Button>
+            <Button type="primary" disabled={acceptedCount < 3} loading={commitMutation.isPending} onClick={handleSubmit}>
               提交注册
             </Button>
           </Space>

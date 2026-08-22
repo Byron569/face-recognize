@@ -28,6 +28,8 @@ export interface PoseStepConfig {
 // 左右约定(以实测为准,勿被镜像臆测误导):
 // 经真机验证:用户向自己的左边转头时,检测到的 signed yaw < 0 => left 用负区间;
 //         用户向自己的右边转头时, signed yaw > 0 => right 用正区间。
+// 上下约定:抬头时鼻尖上移、up_dist 缩小,pitch=(down-up) 增大为正 => up 用正区间;
+//        低头时 pitch 为负 => down 用负区间。同属几何推导,勿按直觉颠倒。
 // (送检测/采帧的数据帧不做镜像翻转,预览镜像仅显示层,不影响此处判定)
 export const POSE_STEPS: PoseStepConfig[] = [
   { pose: 'frontal', shortLabel: '正脸', instruction: '请正对摄像头', hintOk: '很好,保持', hintAdjust: '请正对屏幕,双眼平视',
@@ -37,9 +39,9 @@ export const POSE_STEPS: PoseStepConfig[] = [
   { pose: 'right',  shortLabel: '右转', instruction: '请缓缓向右转头', hintOk: '角度到位', hintAdjust: '再向右转一点',
     targetYaw: [0.22, 1.0], targetPitch: [-0.5, 0.5] },
   { pose: 'up',     shortLabel: '抬头', instruction: '请微微抬头', hintOk: '角度到位', hintAdjust: '再抬高一点',
-    targetYaw: [-0.35, 0.35], targetPitch: [-1.0, -0.3] },
+    targetYaw: [-0.5, 0.5], targetPitch: [0.25, 1.2] },
   { pose: 'down',   shortLabel: '低头', instruction: '请微微低头', hintOk: '角度到位', hintAdjust: '再低一点',
-    targetYaw: [-0.35, 0.35], targetPitch: [0.3, 1.0] },
+    targetYaw: [-0.5, 0.5], targetPitch: [-1.2, -0.25] },
 ];
 
 export function checkPose(
@@ -69,3 +71,14 @@ export function checkPose(
 export function shouldAdvanceStep(capturedCount: number, required = 1): boolean {
   return capturedCount >= required;
 }
+
+/** 拒绝原因 token → 中文(审核页展示)。 */
+export const REASON_LABELS: Record<string, string> = {
+  no_face: '未检测到人脸',
+  multiple_faces: '多人同框',
+  low_detection_score: '置信度不足',
+  face_too_small: '人脸过小',
+  missing_landmarks: '关键点缺失',
+  missing_embedding: '特征提取失败',
+  too_blurry: '画面模糊',
+};

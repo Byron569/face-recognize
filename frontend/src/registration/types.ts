@@ -10,6 +10,10 @@ export interface CapturedFrame {
   /** 采帧时的姿态比率(review 卡片显示 + 同姿态重复帧拦截)。 */
   yawRatio?: number;
   pitchRatio?: number;
+  /** analyze 质量结论(审核页展示/提交门槛用)。 */
+  accepted?: boolean;
+  reason?: string | null;          // 拒绝原因 token
+  qualityScore?: number | null;
 }
 
 export type PoseName = 'frontal' | 'left' | 'right' | 'up' | 'down';
