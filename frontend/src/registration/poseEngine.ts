@@ -25,18 +25,17 @@ export interface PoseStepConfig {
   targetPitch: [number, number];
 }
 
-// 左右约定(以实测为准,勿被镜像臆测误导):
-// 经真机验证:用户向自己的左边转头时,检测到的 signed yaw < 0 => left 用负区间;
-//         用户向自己的右边转头时, signed yaw > 0 => right 用正区间。
 // 上下约定:抬头时鼻尖上移、up_dist 缩小,pitch=(down-up) 增大为正 => up 用正区间;
 //        低头时 pitch 为负 => down 用负区间。同属几何推导,勿按直觉颠倒。
+// 左右文案:经真机验证,判定 left 步骤(负区间)时用户实际需向右转,right 步骤(正区间)
+//        实际需向左转;故 left 的提示文案用"向右转"、right 用"向左转"(区间保持判定不变)。
 // (送检测/采帧的数据帧不做镜像翻转,预览镜像仅显示层,不影响此处判定)
 export const POSE_STEPS: PoseStepConfig[] = [
   { pose: 'frontal', shortLabel: '正脸', instruction: '请正对摄像头', hintOk: '很好,保持', hintAdjust: '请正对屏幕,双眼平视',
     targetYaw: [-0.2, 0.2], targetPitch: [-0.28, 0.28] },
-  { pose: 'left',   shortLabel: '左转', instruction: '请缓缓向左转头', hintOk: '角度到位', hintAdjust: '再向左转一点',
+  { pose: 'left',   shortLabel: '右转', instruction: '请缓缓向右转头', hintOk: '角度到位', hintAdjust: '再向右转一点',
     targetYaw: [-1.0, -0.22], targetPitch: [-0.5, 0.5] },
-  { pose: 'right',  shortLabel: '右转', instruction: '请缓缓向右转头', hintOk: '角度到位', hintAdjust: '再向右转一点',
+  { pose: 'right',  shortLabel: '左转', instruction: '请缓缓向左转头', hintOk: '角度到位', hintAdjust: '再向左转一点',
     targetYaw: [0.22, 1.0], targetPitch: [-0.5, 0.5] },
   { pose: 'up',     shortLabel: '抬头', instruction: '请微微抬头', hintOk: '角度到位', hintAdjust: '再抬高一点',
     targetYaw: [-0.5, 0.5], targetPitch: [0.25, 1.2] },
