@@ -28,6 +28,8 @@ interface DetState {
   detScore: number;
   yawRatio: number;
   pitchRatio: number;
+  imgW: number;   // 送检帧宽度(overlay 按真实尺寸换算,勿用硬编码)
+  imgH: number;
 }
 
 /** 摄像头实时注册弹窗:实时取景 → 五步动作引导自动采帧 → 审核 → 原子入库。 */
@@ -61,19 +63,34 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
   stepIndexRef.current = stepIndex;
   detRef.current = det;
 
-  const startCapture = useCallback(async () => {
+  const startCapture = useCallback(async (keepFrames = false) => {
     runTokenRef.current += 1;
     const token = runTokenRef.current;
-    const video = videoRef.current;
-    if (!video) return;
-    sourceRef.current = new CameraCaptureSource(video);
-    setCaptured([]);
-    setPerPose({ frontal: 0, left: 0, right: 0, up: 0, down: 0 });
-    setStepIndex(0);
+    if (!keepFrames) {
+      setCaptured([]);
+      setPerPose({ frontal: 0, left: 0, right: 0, up: 0, down: 0 });
+      setStepIndex(0);
+      setAnalysis(null);
+      setResult(null);
+    }
     setDet(null);
-    setHint('');
+    setHint('正在启动摄像头…');
+    // 先切到 capturing 阶段让 <video> 元素挂载(videoRef 只在其挂载后才存在),
+    // 双 rAF 等待 React 完成渲染提交后再取 ref
+    setStage('capturing');
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    const video = videoRef.current;
+    if (!video) {
+      if (token === runTokenRef.current) {
+        message.error('视频组件初始化失败,请重试');
+        setStage('setup');
+      }
+      return;
+    }
+    const src = new CameraCaptureSource(video);
+    sourceRef.current = src;
     try {
-      await sourceRef.current.open();
+      await src.open();
     } catch (err: any) {
       if (token === runTokenRef.current) {
         message.error(err?.message || '无法访问摄像头');
@@ -82,7 +99,6 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       return;
     }
     if (token !== runTokenRef.current) return;
-    setStage('capturing');
     setHint(POSE_STEPS[0].instruction);
 
     // 实时检测节流循环
@@ -109,6 +125,8 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
           detScore: f.det_score,
           yawRatio: f.yaw_ratio ?? 0,
           pitchRatio: f.pitch_ratio ?? 0,
+          imgW: res.data.width || 1,
+          imgH: res.data.height || 1,
         };
         setDet(d);
         const step = POSE_STEPS[stepIndexRef.current];
@@ -177,9 +195,9 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       setAnalysis(res.data);
       const okCount = res.data.accepted_count;
       if (okCount < 3) {
-        message.warning(`有效帧不足(${okCount}),已保留已采集帧,可继续采集`);
-        setStage('capturing');
-        // 重新开检测
+        message.warning(`有效帧不足(${okCount}),已保留已采集帧,继续采集`);
+        // 摄像头已在 finishCapture 关闭,重开并保留已采帧续采
+        void startCapture(true);
         return;
       }
       // 只保留推荐帧
@@ -188,7 +206,8 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       setStage('review');
     } catch (err: any) {
       message.error(err?.response?.data?.detail || '分析失败');
-      setStage('capturing');
+      // 分析失败同样需要重开摄像头续采(保留已采帧)
+      void startCapture(true);
     }
   }, []);
 
@@ -278,7 +297,7 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
               </Form.Item>
             )}
           </Form>
-          <Button type="primary" icon={<VideoCameraOutlined />} onClick={startCapture} block>
+          <Button type="primary" icon={<VideoCameraOutlined />} onClick={() => void startCapture()} block>
             开始采集
           </Button>
           <div style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
@@ -295,10 +314,10 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
               <div
                 style={{
                   position: 'absolute',
-                  left: `${(detect.bbox[0] / 640) * 100}%`,
-                  top: `${(detect.bbox[1] / 480) * 100}%`,
-                  width: `${((detect.bbox[2] - detect.bbox[0]) / 640) * 100}%`,
-                  height: `${((detect.bbox[3] - detect.bbox[1]) / 480) * 100}%`,
+                  left: `${(detect.bbox[0] / detect.imgW) * 100}%`,
+                  top: `${(detect.bbox[1] / detect.imgH) * 100}%`,
+                  width: `${((detect.bbox[2] - detect.bbox[0]) / detect.imgW) * 100}%`,
+                  height: `${((detect.bbox[3] - detect.bbox[1]) / detect.imgH) * 100}%`,
                   border: '2px solid #52c41a',
                   boxSizing: 'border-box',
                   pointerEvents: 'none',

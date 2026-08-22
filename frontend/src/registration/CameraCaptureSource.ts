@@ -20,8 +20,13 @@ export class CameraCaptureSource {
       audio: false,
     });
     this.stream = stream;
-    // 等 video 元数据就绪
+    // 先绑定流再等元数据:loadedmetadata 只有在设置 srcObject 之后才会触发(顺序反了会永久死等)
+    this.videoEl.srcObject = stream;
     await new Promise<void>((resolve, reject) => {
+      if (this.videoEl.readyState >= 1) {
+        resolve();
+        return;
+      }
       const onReady = () => {
         this.videoEl.removeEventListener('loadedmetadata', onReady);
         resolve();
@@ -33,8 +38,7 @@ export class CameraCaptureSource {
       this.videoEl.addEventListener('loadedmetadata', onReady);
       this.videoEl.addEventListener('error', onErr);
     });
-    this.videoEl.srcObject = stream;
-    await this.videoEl.play().catch(() => { /* autoPlay 拦截会有 muted playsInline,见调用方 */ });
+    await this.videoEl.play().catch(() => { /* muted+playsInline 允许自动播放 */ });
   }
 
   /** 抓取一帧 JPEG(等比缩至 maxHeight),未就绪返回 null。 */
