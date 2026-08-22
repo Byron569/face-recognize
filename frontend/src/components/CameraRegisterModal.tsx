@@ -421,7 +421,16 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       message.success(`已注册 ${res.data.embedding_count_added} 个角度特征`);
       queryClient.invalidateQueries({ queryKey: ['faces'] });
     },
-    onError: (err: any) => message.error(err?.response?.data?.detail || '提交失败'),
+    onError: (err: any) => {
+      const detail = String(err?.response?.data?.detail ?? '');
+      const map: Record<string, string> = {
+        too_few_frames: '服务端校验未通过≥3张合格帧,请对红叉方向重新采集后再提交',
+        too_many_frames: '提交帧数超限',
+        name_required: '需要填写姓名',
+        identity_not_found: '目标身份不存在',
+      };
+      message.error(map[detail] || detail || '提交失败');
+    },
   });
 
   const handleSubmit = () => {
@@ -431,9 +440,16 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       return;
     }
     if (mode === 'create') {
-      form.validateFields().then((values) => {
-        commitMutation.mutate({ mode, name: values.name, notes: values.notes || '', frames });
-      });
+      // 用 getFieldsValue 直接取(form 在 review 阶段未挂载,validateFields 的 promise 可能 reject),
+      // 不再依赖表单校验的异步结果;姓名为空时显式提示。
+      const values = form.getFieldsValue();
+      const nm = String(values.name ?? '').trim();
+      if (!nm) {
+        message.error('请先在设置页填写姓名');
+        setStage('setup');
+        return;
+      }
+      commitMutation.mutate({ mode, name: nm, notes: String(values.notes ?? ''), frames });
     } else {
       const id = form.getFieldValue('identityId');
       if (!id) {
