@@ -159,6 +159,18 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       finishCapture(token);
       return;
     }
+    // 同姿态重复帧拦截:当前 yaw/pitch 与同 pose 已采帧几乎一致(差异<阈值)则跳过,
+    // 避免连续采到几乎相同的脸(配合后端 yaw 符号修复,防止出现两张同侧脸)
+    const curDet = detRef.current;
+    if (curDet) {
+      const dup = capturedRef.current.some((f) =>
+        f.pose === pose
+        && f.yawRatio !== undefined
+        && Math.abs(f.yawRatio - curDet.yawRatio) < 0.06
+        && Math.abs((f.pitchRatio ?? 0) - curDet.pitchRatio) < 0.06,
+      );
+      if (dup) return;
+    }
     const blob = await grabRegFrame();
     if (!blob) return;
     lastCaptureRef.current = now;
@@ -168,6 +180,8 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       pose,
       blob,
       previewUrl: URL.createObjectURL(blob),
+      yawRatio: curDet?.yawRatio,
+      pitchRatio: curDet?.pitchRatio,
     };
     const next = [...capturedRef.current, frame];
     setCaptured(next);
@@ -459,37 +473,41 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       {stage === 'capturing' && (
         <div>
           <div style={{ position: 'relative', background: '#1a1a2e', aspectRatio: '4 / 3', borderRadius: 8, overflow: 'hidden' }}>
-            {selected.kind === 'system' ? (
-              wsPreviewUrl ? (
-                <img src={wsPreviewUrl} alt="预览" style={{ width: '100%', display: 'block' }} />
+            {/* 镜像 wrapper:仅本机自拍模式做水平镜像(照镜子习惯);系统监控模式不镜像。
+                镜像只是显示层,送检测/采帧的数据帧始终不镜像,否则左右判定语义会颠倒。 */}
+            <div style={selected.kind === 'device' ? { width: '100%', height: '100%', transform: 'scaleX(-1)' } : { width: '100%', height: '100%' }}>
+              {selected.kind === 'system' ? (
+                wsPreviewUrl ? (
+                  <img src={wsPreviewUrl} alt="预览" style={{ width: '100%', display: 'block' }} />
+                ) : (
+                  <div style={{ color: '#888', textAlign: 'center', paddingTop: '40%' }}>等待视频流…</div>
+                )
               ) : (
-                <div style={{ color: '#888', textAlign: 'center', paddingTop: '40%' }}>等待视频流…</div>
-              )
-            ) : (
-              <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', display: 'block' }} />
-            )}
-            {detect && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: `${(detect.bbox[0] / detect.imgW) * 100}%`,
-                  top: `${(detect.bbox[1] / detect.imgH) * 100}%`,
-                  width: `${((detect.bbox[2] - detect.bbox[0]) / detect.imgW) * 100}%`,
-                  height: `${((detect.bbox[3] - detect.bbox[1]) / detect.imgH) * 100}%`,
-                  border: '2px solid #52c41a',
-                  boxSizing: 'border-box',
-                  pointerEvents: 'none',
-                }}
-              />
-            )}
-            <div style={{ position: 'absolute', top: 8, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
-              <Tag color="blue" style={{ fontSize: 14, padding: '4px 12px' }}>{hint}</Tag>
+                <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', display: 'block' }} />
+              )}
+              {detect && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: `${(detect.bbox[0] / detect.imgW) * 100}%`,
+                    top: `${(detect.bbox[1] / detect.imgH) * 100}%`,
+                    width: `${((detect.bbox[2] - detect.bbox[0]) / detect.imgW) * 100}%`,
+                    height: `${((detect.bbox[3] - detect.bbox[1]) / detect.imgH) * 100}%`,
+                    border: '2px solid #52c41a',
+                    boxSizing: 'border-box',
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+            </div>
+            <div style={{ position: 'absolute', top: 8, left: 12, right: 12, textAlign: 'center', pointerEvents: 'none' }}>
+              <Tag color="blue" style={{ fontSize: 14, padding: '4px 12px', maxWidth: '100%', whiteSpace: 'normal' }}>{hint}</Tag>
             </div>
           </div>
           <Steps
             current={stepIndex}
             items={POSE_STEPS.map((s) => ({
-              title: s.instruction.split(',')[0],
+              title: s.shortLabel,
               description: `${(perPose[s.pose] || 0)} 帧`,
             }))}
             size="small"
@@ -536,6 +554,11 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
               <div key={f.frameId} style={{ position: 'relative', width: 150 }}>
                 <img src={f.previewUrl} alt={f.pose} style={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 6 }} />
                 <Tag color="green" style={{ position: 'absolute', top: 4, left: 4 }}>{f.pose}</Tag>
+                {f.yawRatio !== undefined && (
+                  <Tag color="blue" style={{ position: 'absolute', bottom: 4, left: 4, fontSize: 11 }}>
+                    yaw {f.yawRatio >= 0 ? '+' : ''}{f.yawRatio.toFixed(2)}
+                  </Tag>
+                )}
                 <Button
                   size="small"
                   danger

@@ -65,8 +65,12 @@ def compute_pose_ratios(kps) -> Tuple[float, float]:
     inter_eye = max(abs(right_eye[0] - left_eye[0]), 1.0)
     eye_mid_y = (left_eye[1] + right_eye[1]) / 2.0
     mouth_mid_y = (left_mouth[1] + right_mouth[1]) / 2.0
-    # 鼻尖相对双眼横向中点的偏移 → yaw(与嘴偏离对称,更稳)
-    yaw_ratio = abs(nose[0] - eye_mid_x) / inter_eye
+    # 鼻尖相对双眼横向中点的偏移 → yaw(带符号)
+    # 镜像几何:用户面对镜头时其左手在画面右侧;用户向自己的左边转头时,
+    # 鼻尖在画面中向右移动(nose_x 增大)。因此约定:
+    #   yaw_ratio > 0 = 用户向左转头;< 0 = 用户向右转头
+    # (旧实现取 abs 丢失方向,导致前端 left 区间永不命中、right 误命中未翻转的脸)
+    yaw_ratio = (nose[0] - eye_mid_x) / inter_eye
     # pitch: 鼻尖到双眼距 与 鼻尖到嘴距 不对称 → pitch(带符号,抬头为负,低头为正)
     up_mid_y = eye_mid_y
     down_mid_y = mouth_mid_y
@@ -79,12 +83,15 @@ def compute_pose_ratios(kps) -> Tuple[float, float]:
 def classify_pose(
     yaw_ratio: float, pitch_ratio: float, max_yaw: float, max_pitch: float
 ) -> str:
-    """返回 'frontal'|'left'|'right'|'up'|'down'。"""
+    """返回 'frontal'|'left'|'right'|'up'|'down'。
+
+    左右约定与 compute_pose_ratios 一致:yaw>0 = 用户向左转头(left)。
+    """
     if abs(yaw_ratio) <= max_yaw and abs(pitch_ratio) <= max_pitch:
         return "frontal"
-    if yaw_ratio <= -max_yaw:
-        return "left"
     if yaw_ratio >= max_yaw:
+        return "left"
+    if yaw_ratio <= -max_yaw:
         return "right"
     if pitch_ratio <= -max_pitch:
         return "up"

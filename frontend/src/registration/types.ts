@@ -7,6 +7,9 @@ export interface CapturedFrame {
   pose: PoseName;            // 采集时所属动作步骤
   blob: Blob;                // JPEG
   previewUrl: string;        // Object URL(审核页缩略图)
+  /** 采帧时的姿态比率(review 卡片显示 + 同姿态重复帧拦截)。 */
+  yawRatio?: number;
+  pitchRatio?: number;
 }
 
 export type PoseName = 'frontal' | 'left' | 'right' | 'up' | 'down';

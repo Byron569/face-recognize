@@ -66,11 +66,25 @@ def test_compute_pose_ratios_profile_has_large_yaw():
 
 
 def test_classify_pose_all_five_regions():
+    # 左右约定:yaw>0 = 用户向左转头(left)
     assert classify_pose(0.0, 0.0, 0.2, 0.28) == "frontal"
-    assert classify_pose(-0.3, 0.0, 0.2, 0.28) == "left"
-    assert classify_pose(0.3, 0.0, 0.2, 0.28) == "right"
+    assert classify_pose(0.3, 0.0, 0.2, 0.28) == "left"
+    assert classify_pose(-0.3, 0.0, 0.2, 0.28) == "right"
     assert classify_pose(0.0, -0.3, 0.2, 0.28) == "up"
     assert classify_pose(0.0, 0.3, 0.2, 0.28) == "down"
+
+
+def test_compute_pose_ratios_left_turn_is_positive():
+    # 用户向左转头 → 画面中鼻尖右移(nose_x > eye_mid_x)→ yaw > 0
+    yaw, _ = compute_pose_ratios(KPS_PROFILE)
+    assert yaw > 0.20
+
+
+def test_compute_pose_ratios_right_turn_is_negative():
+    # 对称镜像:鼻尖在双眼中点左侧 → 用户向右转头 → yaw < 0(防后人把符号改回去)
+    mirrored = [(640.0 - x, y) for (x, y) in KPS_PROFILE]
+    yaw, _ = compute_pose_ratios(mirrored)
+    assert yaw < -0.20
 
 
 def test_analyze_rejects_no_face():
