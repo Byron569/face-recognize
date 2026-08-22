@@ -254,6 +254,7 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
       pitchRatio: curDetBack?.pitchRatio,
     };
     const next = [...capturedRef.current, frame];
+    capturedRef.current = next;   // 同步 ref,避免 finishCapture 同步读旧快照丢帧
     setCaptured(next);
     setPerPose((prev) => ({ ...prev, [pose]: (prev[pose] || 0) + 1 }));
 
@@ -296,7 +297,9 @@ export default function CameraRegisterModal({ open, identities, onClose }: Props
     const removed = capturedRef.current.filter((f) => f.pose === pose && f.frameId !== frame.frameId);
     removed.forEach((f) => URL.revokeObjectURL(f.previewUrl));
     const others = capturedRef.current.filter((f) => f.pose !== pose);
-    setCaptured([...others, frame]);
+    const merged = [...others, frame];
+    capturedRef.current = merged;   // 同步 ref,避免提交时读到替换前的旧快照
+    setCaptured(merged);
     setRecapturePose(null);
     setStage('review');
     if (frame.accepted !== true) {
