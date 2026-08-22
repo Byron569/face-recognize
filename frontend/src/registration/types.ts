@@ -38,3 +38,15 @@ export interface CommitResult {
   identity_id: string;
   embedding_count_added: number;
 }
+
+/** 视频源类型。 */
+export type SourceKind = 'device' | 'system';
+
+/** 选中的视频源描述(序列化进 localStorage)。 */
+export interface SelectedSource {
+  kind: SourceKind;
+  /** kind=device:设备 deviceId,'__default__' 表示不指定(浏览器默认) */
+  deviceId: string;
+  /** kind=system:后端摄像头 id */
+  cameraId: string;
+}

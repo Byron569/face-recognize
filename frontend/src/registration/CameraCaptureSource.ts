@@ -6,8 +6,11 @@ export class CameraCaptureSource {
   private stream: MediaStream | null = null;
   private canvas: HTMLCanvasElement | null = null;
 
-  constructor(videoEl: HTMLVideoElement) {
+  private deviceId: string | undefined;
+
+  constructor(videoEl: HTMLVideoElement, deviceId?: string) {
     this.videoEl = videoEl;
+    this.deviceId = deviceId && deviceId !== '__default__' ? deviceId : undefined;
   }
 
   /** 请求摄像头权限并开始实时取景。失败抛错由调用方展示。 */
@@ -15,10 +18,18 @@ export class CameraCaptureSource {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('当前浏览器不支持摄像头,请使用 Chrome/Edge 并通过 https 或 localhost 访问');
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-      audio: false,
-    });
+    const video: MediaTrackConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+    if (this.deviceId) {
+      // 指定设备必须 exact,否则浏览器可能静默回退到别的设备
+      video.deviceId = { exact: this.deviceId };
+    } else {
+      // 默认源保持移动端前置行为
+      video.facingMode = 'user';
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
     this.stream = stream;
     // 先绑定流再等元数据:loadedmetadata 只有在设置 srcObject 之后才会触发(顺序反了会永久死等)
     this.videoEl.srcObject = stream;
@@ -69,5 +80,12 @@ export class CameraCaptureSource {
     this.stream = null;
     this.videoEl.srcObject = null;
     this.canvas = null;
+  }
+
+  /** 枚举视频输入设备;授权前 label 为空,调用方负责序号兜底。 */
+  static async listDevices(): Promise<MediaDeviceInfo[]> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === 'videoinput');
   }
 }
