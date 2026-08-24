@@ -9,9 +9,10 @@ import pytest
 
 from ai_monitor_pose.config import FallTaskConfig
 
-ABS = "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt"
-SHA = "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt.sha256"
-CFG_MANIFEST = "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/capacity-cuda0.json"
+PLUGIN = "D:/ai-monitor-1.1.0/pose_plugin"
+ABS = f"{PLUGIN}/models/yolov8n-pose.pt"
+SHA = f"{PLUGIN}/models/yolov8n-pose.pt.sha256"
+CFG_MANIFEST = f"{PLUGIN}/models/capacity-cuda0.json"
 
 
 def _valid_mapping() -> dict:
@@ -65,9 +66,9 @@ def _valid_mapping() -> dict:
             "overlay_ttl_ms": 1200,
             "transition_queue_capacity_per_camera": 64,
             "transition_queue_resume_ratio": 0.50,
-            "worker_journal_path": "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/worker-transition-journal.sqlite3",
+            "worker_journal_path": f"{PLUGIN}/var/worker-transition-journal.sqlite3",
             "worker_journal_pending_capacity": 10000,
-            "event_spool_path": "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/fall-event-spool.sqlite3",
+            "event_spool_path": f"{PLUGIN}/var/fall-event-spool.sqlite3",
             "event_spool_pending_capacity": 10000,
             "delivered_retention_hours": 24,
             "delivered_retention_rows": 1000,

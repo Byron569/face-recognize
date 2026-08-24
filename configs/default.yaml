@@ -92,7 +92,7 @@ tasks:
     runtime_key: "pose-cuda-0"
 
     worker:
-      python: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/.venv-worker/Scripts/python.exe"
+      python: "D:/ai-monitor-1.1.0/pose_plugin/.venv-worker/Scripts/python.exe"
       module: "ai_monitor_pose.worker"
       pipe_prefix: "ai-monitor-fall-v1"
       startup_timeout_s: 45
@@ -117,8 +117,8 @@ tasks:
       minimum_free_vram_mb: 1024
 
     model:
-      path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt"
-      sha256_file: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt.sha256"
+      path: "D:/ai-monitor-1.1.0/pose_plugin/models/yolov8n-pose.pt"
+      sha256_file: "D:/ai-monitor-1.1.0/pose_plugin/models/yolov8n-pose.pt.sha256"
       allow_download: false
       imgsz: 640
       confidence: 0.35
@@ -128,7 +128,7 @@ tasks:
     runtime:
       max_cameras: 4
       requested_max_total_fps: 32
-      capacity_manifest_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/capacity-cuda0.json"
+      capacity_manifest_path: "D:/ai-monitor-1.1.0/pose_plugin/models/capacity-cuda0.json"
       capacity_manifest_sha256: "f30eb17d2b70f50b6e55de3cda71e4a7a1df14cfbd55822a3da04bdef8268ac8"  # 阶段9 正式300s基准 manifest 摘要(含 driver_version)
       capacity_headroom_ratio: 0.75
       frame_slots_per_camera: 2
@@ -138,9 +138,9 @@ tasks:
       overlay_ttl_ms: 1200
       transition_queue_capacity_per_camera: 64
       transition_queue_resume_ratio: 0.50
-      worker_journal_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/worker-transition-journal.sqlite3"
+      worker_journal_path: "D:/ai-monitor-1.1.0/pose_plugin/var/worker-transition-journal.sqlite3"
       worker_journal_pending_capacity: 10000
-      event_spool_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/fall-event-spool.sqlite3"
+      event_spool_path: "D:/ai-monitor-1.1.0/pose_plugin/var/fall-event-spool.sqlite3"
       event_spool_pending_capacity: 10000
       delivered_retention_hours: 24
       delivered_retention_rows: 1000
