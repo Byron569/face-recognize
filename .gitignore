@@ -37,3 +37,8 @@ Thumbs.db
 
 # InsightFace 按官方布局自动下载的模型缓存(backend/models/,约 280MB,含 zip 包),禁止入库
 backend/models/
+
+# 临时/工具产物（不入库）
+.reasonix/
+_worker_stage/
+ai monitor/
