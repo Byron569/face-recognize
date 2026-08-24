@@ -1,4 +1,4 @@
-# AI Monitor — 一键安装脚本 (Windows / PowerShell)
+﻿# AI Monitor — 一键安装脚本 (Windows / PowerShell)
 #
 # 用途: 仓库 clone 下来之后, 一条命令完成环境准备:
 #   1. 后端 Python 虚拟环境  .venv                (FastAPI + InsightFace + onnxruntime-gpu)
@@ -154,19 +154,30 @@ if (-not $SkipModels -and -not $OnlyWorker -and -not $OnlyBackend) {
     $PoseModelDir = Join-Path $Root 'pose_plugin\models'
     New-Item -ItemType Directory -Force -Path $PoseModelDir | Out-Null
 
-    # yolov8n-pose.pt (来自 Ultralytics 官方 release; 用仓库内置 .sha256 校验)
+    # yolov8n-pose.pt: 优先从本项目 GitHub Release 拉取, 失败回退官方源
+    #   发布 tag 需与 publish_release.ps1 保持一致(默认 V2.1.0)
     $PosePt  = Join-Path $PoseModelDir 'yolov8n-pose.pt'
     $ShaFile = Join-Path $PoseModelDir 'yolov8n-pose.pt.sha256'
+    $ReleaseRepo = 'Byron569/face-recognize'   # 可改为你自己的 owner/repo
+    $ReleaseTag  = 'V2.1.0'
     if (-not (Test-Path $PosePt)) {
-        Write-Host "`n    下载 yolov8n-pose.pt(约 8MB, Ultralytics 官方源)..."
-        $url = 'https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-pose.pt'
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $PosePt -UseBasicParsing
-        } catch {
-            Write-Host "    ⚠ 直连 pytorch assets 失败, 尝试镜像 assets ..." -ForegroundColor Yellow
-            $url = 'https://modelscope.cn/models/Ultralytics/YOLOv8-Pose/resolve/master/yolov8n-pose.pt'
-            Invoke-WebRequest -Uri $url -OutFile $PosePt -UseBasicParsing
+        $sources = @(
+            "https://github.com/$ReleaseRepo/releases/download/$ReleaseTag/yolov8n-pose.pt",  # 项目 Release(首选)
+            'https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-pose.pt', # 官方源(回退)
+            'https://modelscope.cn/models/Ultralytics/YOLOv8-Pose/resolve/master/yolov8n-pose.pt' # 镜像(再回退)
+        )
+        $downloaded = $false
+        foreach ($url in $sources) {
+            Write-Host "`n    下载 yolov8n-pose.pt: $url"
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $PosePt -UseBasicParsing
+                $downloaded = $true
+                break
+            } catch {
+                Write-Host "    ⚠ 下载失败: $($_.Exception.Message) - 换下一源" -ForegroundColor Yellow
+            }
         }
+        if (-not $downloaded) { throw "yolov8n-pose.pt 所有源均下载失败" }
     } else {
         Write-Host "    已存在 yolov8n-pose.pt，跳过下载"
     }
