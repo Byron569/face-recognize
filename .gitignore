@@ -52,3 +52,5 @@ pose_plugin/.pytest_cache/
 pose_plugin/*.egg-info/
 pose_plugin/**/*.pyc
 pose_plugin/**/*.pyo
+# 姿态 Worker 运行时产物(事件归档 SQLite, 不随仓库分发)
+pose_plugin/var/

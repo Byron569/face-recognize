@@ -126,3 +126,74 @@ def test_close_releases_only_own_camera_and_is_idempotent() -> None:
     assert rt.closed is True
     t.close()  # 幂等
     assert rt.closed is True
+
+
+# ── 姿态叠加 analytics 生产者 ──────────────────────────────
+
+class ResultRuntime(FakeRuntime):
+    def __init__(self, result=None):
+        super().__init__()
+        self.result = result
+        self.state = "READY"
+
+    def poll(self, c, s):
+        from types import SimpleNamespace
+        return SimpleNamespace(latest_result=self.result, compatibility_events=(), health=self.state)
+
+
+def _result_dict(session, source_frame_id=98):
+    return {
+        "camera_id": "cam-1", "camera_session_id": session,
+        "source_frame_id": source_frame_id, "source_width": 1920, "source_height": 1080,
+        "coordinate_space": "source_pixels", "end_to_end_ms": 61.7,
+        "tracks": [{
+            "pose_track_id": 3, "state": "normal", "detection_score": 0.9,
+            "bbox_xyxy": [100.0, 200.0, 300.0, 700.0],
+            "keypoints_coco17": [[100.0, 200.0, 0.9], [110.0, 210.0, 0.8]],
+        }],
+    }
+
+
+def _ctx_analytics(camera_id="cam-1", frame_id=100):
+    from types import SimpleNamespace
+    return SimpleNamespace(camera_id=camera_id, frame_id=frame_id, frame=object(), tracks=[], analytics={})
+
+
+def test_run_attaches_pose_analytics_from_latest_result() -> None:
+    rt = ResultRuntime()
+    t = FallDetectionTask(_cfg(), runtime_factory=_Factory([rt]))
+    rt.result = _result_dict(t.camera_session_id)
+    t.should_run(1, _ctx())
+    ctx = _ctx_analytics()
+    t.run(None, ctx)
+    fd = ctx.analytics["fall_detection"]
+    assert fd["camera_session_id"] == t.camera_session_id
+    assert fd["attached_to_frame_id"] == 100
+    assert fd["source_frame_id"] == 98
+    assert fd["source_width"] == 1920 and fd["source_height"] == 1080
+    assert fd["coordinate_space"] == "source_pixels"
+    assert fd["health"] == "READY"
+    assert fd["overlay_expires_in_ms"] > 0
+    tr = fd["tracks"][0]
+    # bbox 由 xyxy 投影为 xywh
+    assert tr["bbox"] == [100.0, 200.0, 200.0, 500.0]
+    assert tr["keypoints"][0][:2] == [100.0, 200.0]
+    assert tr["state"] == "normal"
+
+
+def test_analytics_cleared_after_overlay_ttl() -> None:
+    clock = FakeClock()
+    rt = ResultRuntime()
+    t = FallDetectionTask(_cfg(), runtime_factory=_Factory([rt]), clock=clock)
+    rt.result = _result_dict(t.camera_session_id)
+    t.should_run(1, _ctx())
+    ctx = _ctx_analytics()
+    t.run(None, ctx)
+    assert "fall_detection" in ctx.analytics
+    # 越过 overlay_ttl_ms(1200)后重挂:应清除缓存且不再写 analytics
+    clock.advance(1_300_000_000)
+    rt.result = None  # 无新结果
+    ctx2 = _ctx_analytics()
+    t.run(None, ctx2)
+    assert "fall_detection" not in ctx2.analytics
+    assert t._last_result is None
