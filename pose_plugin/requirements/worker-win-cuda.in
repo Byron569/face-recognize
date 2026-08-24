@@ -1,0 +1,10 @@
+# Worker direct deps, pinned by freeze.
+-c artifacts/candidate-worker-freeze.txt
+torch @ file:///C:/Users/Byron/Downloads/torch-2.7.0%2Bcu126-cp312-cp312-win_amd64.whl
+torchvision @ file:///C:/Users/Byron/Downloads/torchvision-0.22.0%2Bcu126-cp312-cp312-win_amd64.whl
+ultralytics
+PyYAML
+opencv-python
+scipy
+nvidia-ml-py
+numpy

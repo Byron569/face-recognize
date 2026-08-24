@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-monitor-pose"
+version = "0.1.0"
+description = "AI Monitor 摔倒检测插件（YOLOv8 Pose，GPU-only 独立 Worker）"
+requires-python = ">=3.12"
+# client 默认安装保持轻量，不引入任何 GPU 重依赖。
+dependencies = []
+
+[project.optional-dependencies]
+# 仅 AI Monitor client 进程需要的能力；全部为标准库 + 宿主已有依赖。
+client = []
+# 真实部署消费 requirements/worker-win-cuda.lock（阶段9 生成带哈希 lock）。
+worker = [
+    "torch",
+    "ultralytics",
+    "scipy",
+    "PyYAML",
+    "opencv-python",
+]
+dev = [
+    "pytest",
+    "pytest-timeout",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_monitor_pose", "ai_monitor_pose.*"]
+
+[tool.setuptools.package-data]
+ai_monitor_pose = ["py.typed"]

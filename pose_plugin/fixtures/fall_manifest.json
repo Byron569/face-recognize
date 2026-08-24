@@ -1,0 +1,12 @@
+[
+  {
+    "camera_id": "test-fall-cam",
+    "video_path": "D:\\YOLOv8-Pose\\-YOLOv8-Pose--main\\fixtures\\queda.mp4",
+    "sha256": "8b5535c88aee38c4ce02d4cc8cd4512e37e2cc218b2e9656fac22a3078ad05c4",
+    "expected_events": [
+      "fall_potential",
+      "fall_detected"
+    ],
+    "allowed_window_s": 11.0
+  }
+]

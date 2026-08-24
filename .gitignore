@@ -42,3 +42,13 @@ backend/models/
 .reasonix/
 _worker_stage/
 ai monitor/
+
+# pose_plugin 拷贝的姿态项目源码：排除大件/环境/缓存
+pose_plugin/.venv-worker/
+pose_plugin/models/*.pt
+pose_plugin/fixtures/*.mp4
+pose_plugin/**/__pycache__/
+pose_plugin/.pytest_cache/
+pose_plugin/*.egg-info/
+pose_plugin/**/*.pyc
+pose_plugin/**/*.pyo
