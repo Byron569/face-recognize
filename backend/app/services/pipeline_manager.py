@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -29,6 +30,7 @@ from vision.config import VisionConfig
 from vision.pipeline import VisionPipeline
 from vision.tracker import ByteTracker
 
+from .event_ingress import EventIngress
 from .gallery import FaceGallery
 from .model_manager import EnginePool, get_engine_pool
 from .stream_protocol import pack_jpeg_frame
@@ -38,6 +40,17 @@ from .stream_subscriber import LatestFrameSender
 logger = logging.getLogger(__name__)
 
 _pipeline_manager: "PipelineManager | None" = None
+
+# 全局可靠事件入口(线程安全 submit → 原子入库 + Outbox 广播)。
+# 供外部 Task(如跌倒检测)作为 EventSinkProtocol 注入;也承担可靠 fall 事件广播。
+_event_ingress: "EventIngress | None" = None
+
+
+def get_event_ingress() -> EventIngress:
+    global _event_ingress
+    if _event_ingress is None:
+        _event_ingress = EventIngress()
+    return _event_ingress
 
 
 class StreamMetrics:
@@ -120,6 +133,109 @@ def _scale_persons_for_preview(
     return scaled_persons
 
 
+def _project_analytics_to_preview(
+    fall: dict | None, preview_width: int, preview_height: int
+) -> dict:
+    """把 Task 写入的 source-pixels fall analytics 投影为 preview-pixels wire 消息。
+
+    - fall 为 Task 写入 ``context.analytics["fall_detection"]`` 的结构;
+    - preview_width/height 必须 > 0(后端实际整数编码尺寸);
+    - bbox/keypoints 按 ``scale = preview/source`` 缩放,score 不变;
+    - 有效坐标夹紧到 [0, preview-1],NaN/Inf/坏尺寸拒绝;
+    - 输出内层 ``fall_detection`` 与外层 preview 字段,pose 状态保持 wire 小写。
+    """
+    if not isinstance(fall, dict):
+        raise ValueError("fall analytics 必须是 dict")
+    source_width = fall.get("source_width")
+    source_height = fall.get("source_height")
+    if not isinstance(source_width, int) or source_width <= 0:
+        raise ValueError(f"source_width 非法: {source_width!r}")
+    if not isinstance(source_height, int) or source_height <= 0:
+        raise ValueError(f"source_height 非法: {source_height!r}")
+    if not isinstance(preview_width, int) or preview_width <= 0:
+        raise ValueError(f"preview_width 非法: {preview_width!r}")
+    if not isinstance(preview_height, int) or preview_height <= 0:
+        raise ValueError(f"preview_height 非法: {preview_height!r}")
+
+    scale_x = preview_width / source_width
+    scale_y = preview_height / source_height
+    if not (math.isfinite(scale_x) and scale_x > 0):
+        raise ValueError(f"scale_x 非法: {scale_x!r}")
+    if not (math.isfinite(scale_y) and scale_y > 0):
+        raise ValueError(f"scale_y 非法: {scale_y!r}")
+
+    camera_session_id = fall.get("camera_session_id")
+    source_frame_id = fall.get("source_frame_id")
+    preview_frame_id = fall.get("attached_to_frame_id")
+
+    def _scale_coord(v: float, scale: float, limit: int) -> float:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("坐标非有限") from None
+        if not math.isfinite(f):
+            raise ValueError("坐标非有限(nan/inf)")
+        return min(max(f * scale, 0.0), float(limit - 1))
+
+    tracks_out = []
+    for t in fall.get("tracks") or []:
+        bbox = t.get("bbox")
+        _b = None
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            _b = [
+                _scale_coord(bbox[0], scale_x, preview_width),
+                _scale_coord(bbox[1], scale_y, preview_height),
+                _scale_coord(bbox[2], scale_x, preview_width),
+                _scale_coord(bbox[3], scale_y, preview_height),
+            ]
+        kps_out = []
+        for kp in t.get("keypoints") or []:
+            if isinstance(kp, (list, tuple)) and len(kp) >= 2:
+                kps_out.append(
+                    [_scale_coord(kp[0], scale_x, preview_width),
+                     _scale_coord(kp[1], scale_y, preview_height)]
+                )
+        out_t = {
+            "pose_track_id": t.get("pose_track_id"),
+            "state": t.get("state"),
+            "score": t.get("score"),
+            "bbox": _b,
+            "keypoints": kps_out,
+        }
+        tracks_out.append(out_t)
+
+    fd = {
+        "schema_version": fall.get("schema_version", 1),
+        "camera_session_id": camera_session_id,
+        "source_frame_id": source_frame_id,
+        "preview_width": preview_width,
+        "preview_height": preview_height,
+        "coordinate_space": "preview_pixels",
+        "transform": {
+            "kind": "scale_no_letterbox",
+            "scale_x": scale_x,
+            "scale_y": scale_y,
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+        },
+        "health": fall.get("health"),
+        "result_age_ms": fall.get("result_age_ms"),
+        "overlay_expires_in_ms": fall.get("overlay_expires_in_ms"),
+        "worker_end_to_end_ms": fall.get("worker_end_to_end_ms"),
+        "tracks": tracks_out,
+    }
+    fd = {k: v for k, v in fd.items() if v is not None}
+
+    return {
+        "type": "analytics",
+        "schema_version": 1,
+        "camera_id": fall.get("camera_id"),
+        "camera_session_id": camera_session_id,
+        "preview_frame_id": preview_frame_id,
+        "fall_detection": fd,
+    }
+
+
 def get_pipeline_manager() -> "PipelineManager":
     global _pipeline_manager
     if _pipeline_manager is None:
@@ -147,11 +263,19 @@ class PipelineManager:
         self._gallery = FaceGallery()
         self._engine_pool: EnginePool = get_engine_pool()
         self._gallery_loaded = False
+        self._event_ingress = get_event_ingress()
+        self._delivery_modes: Dict[str, str] = {}
 
     # ── 生命周期挂钩 ──────────────────────────────────────
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
+        # 绑定可靠事件入口:广播回到本管理的 WS 事件监听者,投递模式按摄像头 fall 配置解析
+        ingress = self._event_ingress
+        ingress.bind_loop(loop)
+        ingress.set_broadcast(self._broadcast_ingress_event)
+        ingress.set_mode_resolver(self._resolve_delivery_mode)
+        ingress.start()
 
     async def load_gallery(self) -> int:
         """从 PostgreSQL 拉取全部 embedding 构建内存底库。返回条目数。"""
@@ -205,12 +329,34 @@ class PipelineManager:
         tracker = ByteTracker(vision_cfg.track)
 
         # 2. 可插拔任务
+        fall_cfg = (config.get("tasks", {}) or {}).get("fall_detection", {}) or {}
+        with self._lock:
+            # 投递模式按摄像头自己的 fall 配置解析;默认 shadow(仅持久化,不实时告警)
+            self._delivery_modes[camera_id] = str(fall_cfg.get("mode", "shadow"))
         registry = TaskRegistry(config.get("tasks", {}))
-        tasks = registry.load(extra_kwargs={
+        extra_kwargs = {
             "full_config": config,
             "gallery": self._gallery,
             "tracker": tracker,
-        })
+            "event_sink": self._event_ingress,  # 线程安全 submit → 原子入库 + Outbox
+        }
+        if fall_cfg.get("enabled"):
+            # 惰性注入姿态 Runtime 工厂 + 生产 process_factory(启用时才引入姿态包;
+            # import 不加载模型/不启 Worker;首个有效上下文 acquire 时才拉起真实 GPU 进程)
+            from pathlib import Path as _Path
+            from ai_monitor_pose.runtime_registry import PoseRuntimeRegistry
+            from ai_monitor_pose.worker.launcher import build_worker_process_factory
+
+            extra_kwargs["runtime_factory"] = PoseRuntimeRegistry
+            w_cfg = fall_cfg.get("worker") or {}
+            worker_py = str(w_cfg.get("python") or "")
+            worker_mod = str(w_cfg.get("module") or "ai_monitor_pose.worker")
+            pose_root = str(_Path(worker_py).parents[2]) if worker_py else None
+            # 闭包捕获 fall_cfg:worker 进程经 WORKER_CONF 构建同源 FallTaskConfig
+            extra_kwargs["process_factory"] = build_worker_process_factory(
+                worker_py, fall_cfg, module=worker_mod, cwd=pose_root,
+            )
+        tasks = registry.load(extra_kwargs=extra_kwargs)
 
         # 3. 组装流水线(帧/事件回调桥接到 asyncio loop)
         loop = self._loop
@@ -244,9 +390,10 @@ class PipelineManager:
             frame_copy = context.frame.copy()
             self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧(与是否有订阅者无关)
             persons = [t.to_dict() for t in context.tracks]
+            fall_analytics = context.analytics.get("fall_detection") if isinstance(context.analytics, dict) else None
             if not has_viewers:
                 return  # 无订阅者:跳过编码,省 CPU
-            item = (frame_copy, persons, context.frame_id)
+            item = (frame_copy, persons, context.frame_id, fall_analytics)
             try:
                 enc_q.put_nowait(item)
                 stream_metrics.record_enqueue()
@@ -309,6 +456,7 @@ class PipelineManager:
             pipeline = self._pipelines.pop(camera_id, None)
             self._stream_settings.pop(camera_id, None)
             self._stream_metrics.pop(camera_id, None)  # 清理流指标,避免启停累积
+            self._delivery_modes.pop(camera_id, None)
         self._last_frames.pop(camera_id, None)          # 清理抓拍缓存帧
         # 停止编码线程(唤醒 + join,避免线程泄漏)
         stop_evt = self._encode_stops.pop(camera_id, None)
@@ -342,6 +490,11 @@ class PipelineManager:
         for camera_id in list(self._pipelines.keys()):
             await self.stop_camera(camera_id)
         self._engine_pool.close_all()
+        # 停可靠事件入口(有界 drain + 停 dispatcher);幂等
+        try:
+            await self._event_ingress.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("[pipeline-manager] event ingress shutdown failed")
 
     # ── WebSocket 管理 ────────────────────────────────────
 
@@ -394,10 +547,12 @@ class PipelineManager:
                 item = enc_q.get(timeout=0.3)
             except queue.Empty:
                 continue
-            frame, persons, frame_id = item
+            frame, persons, frame_id, fall_analytics = item
             try:
                 original_height, original_width = frame.shape[:2]
                 display_persons = persons
+                preview_width = original_width
+                preview_height = original_height
                 with self._lock:
                     stream_settings = dict(self._stream_settings.get(camera_id, {}))
                 push_max_height = stream_settings.get("max_height", settings.stream_max_height)
@@ -407,6 +562,7 @@ class PipelineManager:
                     frame = cv2.resize(
                         frame, (int(original_width * scale_x), int(original_height * scale_y))
                     )
+                    preview_width, preview_height = frame.shape[1], frame.shape[0]
                     display_persons = _scale_persons_for_preview(persons, scale_x, scale_y)
                 ret, buf = cv2.imencode(
                     ".jpg",
@@ -419,6 +575,15 @@ class PipelineManager:
                 if not ret:
                     continue
                 jpeg = buf.tobytes()
+                analytics_msg = None
+                if fall_analytics is not None:
+                    try:
+                        analytics_msg = _project_analytics_to_preview(
+                            dict(fall_analytics), preview_width, preview_height
+                        )
+                        analytics_msg["camera_id"] = camera_id
+                    except ValueError:  # noqa: BLE001
+                        analytics_msg = None  # 坏数据丢弃该 overlay,不影响帧
                 with self._lock:
                     stream_metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
                 stream_metrics.record_encoded(len(jpeg))
@@ -428,13 +593,17 @@ class PipelineManager:
                 continue
             try:
                 asyncio.run_coroutine_threadsafe(
-                    self._fanout_encoded_frame(camera_id, jpeg, display_persons, frame_id), loop
+                    self._fanout_encoded_frame(
+                        camera_id, jpeg, display_persons, frame_id, analytics_msg
+                    ),
+                    loop,
                 )
             except Exception:  # noqa: BLE001
                 continue
 
     async def _fanout_encoded_frame(
-        self, camera_id: str, jpeg: bytes, persons: list, frame_id: int
+        self, camera_id: str, jpeg: bytes, persons: list, frame_id: int,
+        analytics_msg: dict | None = None,
     ) -> None:
         """事件循环内只做协议封包和非阻塞 fanout,不直接等待 socket。"""
         frame_packet = pack_jpeg_frame(frame_id, jpeg)
@@ -445,8 +614,30 @@ class PipelineManager:
             metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
         for sender in senders:
             before = sender.dropped_frames
-            sender.offer(frame_packet, det_msg)
+            analytics_json = json.dumps(analytics_msg) if analytics_msg is not None else None
+            sender.offer(frame_packet, det_msg, analytics_json)
             metrics.record_subscriber_drops(sender.dropped_frames - before)
+
+    # ── 可靠事件入口(EventIngress)接线 ──────────────────
+
+    def _resolve_delivery_mode(self, camera_id: str) -> str:
+        """摄像头 fall 事件的投递模式(alert=广播告警 / shadow=仅持久化)。默认 shadow。"""
+        with self._lock:
+            return self._delivery_modes.get(camera_id, "shadow")
+
+    async def _broadcast_ingress_event(self, payload: dict) -> None:
+        """EventIngress Outbox dispatcher 的广播回调:把可靠 fall 事件推给 WS 监听者。"""
+        if not payload or not self._event_listeners:
+            return
+        msg = json.dumps(payload, ensure_ascii=False)
+        dead = []
+        for ws in list(self._event_listeners):
+            try:
+                await ws.send_text(msg)
+            except Exception:  # noqa: BLE001
+                dead.append(ws)
+        for ws in dead:
+            self._event_listeners.discard(ws)
 
     # ── 事件处理与落库(EventBridge,在 asyncio loop 内执行)─
 

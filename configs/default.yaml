@@ -82,10 +82,126 @@ tasks:
   face_recognition:
     enabled: true
     class_path: "app.tasks.builtin.face_recognition_task.FaceRecognitionTask"
-  # 预留: 跌倒检测等扩展任务安装后,在此添加条目并设 enabled: true 即可接入
+  # 跌倒检测(姿态项目对外 Task)。默认保持关闭;真实 GPU 与端到端验收后才在摄像头层启用。
+  # 该任务是唯一一份完整基线配置;desktop/balanced/edge_minimal 只允许覆盖 enabled/mode/target_fps。
   fall_detection:
     enabled: false
-    class_path: null
+    class_path: "ai_monitor_pose.task.FallDetectionTask"
+    interval: 1
+    mode: "shadow"
+    runtime_key: "pose-cuda-0"
+
+    worker:
+      python: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/.venv-worker/Scripts/python.exe"
+      module: "ai_monitor_pose.worker"
+      pipe_prefix: "ai-monitor-fall-v1"
+      startup_timeout_s: 45
+      heartbeat_interval_s: 1
+      heartbeat_timeout_s: 3
+      inference_timeout_s: 5
+      graceful_shutdown_timeout_s: 5
+      zero_lease_worker_drain_timeout_s: 5
+      idle_retention_s: 60
+      restart_max_attempts: 3
+      restart_window_s: 600
+      restart_backoff_s: [1, 2, 4]
+
+    gpu:
+      required: true
+      device: "cuda:0"
+      expected_device_name_regex: "(?i)RTX 4060"
+      precision: "fp16"
+      allow_cpu_fallback: false
+      max_gpu_memory_mb: 3072
+      max_vram_fraction: 0.80
+      minimum_free_vram_mb: 1024
+
+    model:
+      path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt"
+      sha256_file: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/yolov8n-pose.pt.sha256"
+      allow_download: false
+      imgsz: 640
+      confidence: 0.35
+      iou: 0.45
+      max_detections: 50
+
+    runtime:
+      max_cameras: 4
+      requested_max_total_fps: 32
+      capacity_manifest_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/models/capacity-cuda0.json"
+      capacity_manifest_sha256: "f30eb17d2b70f50b6e55de3cda71e4a7a1df14cfbd55822a3da04bdef8268ac8"  # 阶段9 正式300s基准 manifest 摘要(含 driver_version)
+      capacity_headroom_ratio: 0.75
+      frame_slots_per_camera: 2
+      max_frame_width: 1920
+      max_frame_height: 1080
+      max_result_age_ms: 1500
+      overlay_ttl_ms: 1200
+      transition_queue_capacity_per_camera: 64
+      transition_queue_resume_ratio: 0.50
+      worker_journal_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/worker-transition-journal.sqlite3"
+      worker_journal_pending_capacity: 10000
+      event_spool_path: "D:/YOLOv8-Pose/-YOLOv8-Pose--main/var/fall-event-spool.sqlite3"
+      event_spool_pending_capacity: 10000
+      delivered_retention_hours: 24
+      delivered_retention_rows: 1000
+
+    delivery:
+      ingress_queue_capacity: 1024
+      outbox_pending_capacity: 10000
+      outbox_resume_ratio: 0.50
+      outbox_delivered_retention_hours: 24
+      outbox_delivered_retention_rows: 10000
+
+    scheduler:
+      target_fps: 8
+      latest_only: true
+      batch_size: 1
+      fair_policy: "service_debt_round_robin"
+      not_ready_retry_ms: 500
+
+    tracker:
+      high_confidence: 0.35
+      low_confidence: 0.15
+      match_iou_threshold: 0.50
+      max_normalized_keypoint_distance: 0.35
+      min_confirm_duration_s: 0.25
+      lost_timeout_s: 1.5
+      ghost_timeout_s: 3.0
+      fallen_ghost_timeout_s: 5.0
+
+    algorithm:
+      required_keypoint_indices: [0, 5, 6, 11, 12, 13, 14]
+      minimum_visible_required: 5
+      keypoint_min_confidence: 0.30
+      minimum_body_height_ratio: 0.12
+      bbox_height_width_fall_max: 0.75
+      torso_inclination_from_vertical_min_deg: 55.0
+      hip_angle_fall_min_deg: 135.0
+      head_descent_body_heights_min: 0.18
+      rotation_energy_min_rad_s: 1.80
+      gravity_factor_min_body_heights_s2: 1.50
+      fast_rotation_energy_min_rad_s: 3.00
+      fast_gravity_factor_min_body_heights_s2: 2.50
+      upright_height_width_min: 1.25
+      upright_torso_inclination_max_deg: 25.0
+      rebound_body_heights_min: 0.12
+      ema_tau_s: 0.20
+      history_duration_s: 4.5
+      trigger_window_s: 1.25
+      trigger_ratio: 0.50
+      min_trigger_duration_s: 0.50
+      max_trigger_gap_s: 0.25
+      min_fall_pose_duration_s: 3.50
+      recovery_duration_s: 1.00
+      rebound_duration_s: 0.50
+      tracker_reset_gap_s: 1.50
+      allow_already_down_detection: false
+
+    cross_camera:
+      enabled: false
+      camera_group_id: null
+      view_id: null
+      max_timestamp_skew_ms: 200
 
 # ── 摄像头默认值(数据库无配置时使用)─────────────────────────
 camera_defaults:

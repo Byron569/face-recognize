@@ -5,7 +5,8 @@ import psutil
 from fastapi import APIRouter, HTTPException
 
 from ..config import build_camera_config, load_profile_config, resolve_project_path
-from ..schemas.system import SystemStatusOut
+from ..schemas.system import FallRuntimeHealthOut, SystemStatusOut
+from ..services.fall_runtime_health import fall_runtime_health
 from ..services.model_manager import get_engine_pool
 from ..services.pipeline_manager import get_pipeline_manager
 
@@ -104,3 +105,14 @@ async def get_runtime_config(profile: str = "desktop"):
 async def update_runtime_config(body: dict):
     """预留:运行时热更新全局配置(当前返回提示,实施时写回 YAML 或配置中心)。"""
     return {"updated": False, "message": "runtime config update is reserved"}
+
+
+@router.get("/system/fall-runtime", response_model=FallRuntimeHealthOut)
+async def get_fall_runtime_health():
+    """只读观测面:跌倒检测 Runtime/Worker/摄像头健康快照。
+
+    仅调用 client 包注册表 health_snapshot(),不启动/重启 Worker,不连接 DB,
+    不泄漏 Pipe authkey / 配置文件路径 / 数据库 URL / 异常堆栈。插件未安装或
+    enabled=false 返回结构化 DISABLED, 不返回 500。
+    """
+    return fall_runtime_health()

@@ -1,29 +1,30 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, it, expect } from 'vitest';
 
 import { createReconnectGuard } from '../src/hooks/reconnectGuard.ts';
 
-test('allows a current socket to reconnect after an unexpected close', () => {
-  const guard = createReconnectGuard();
-  const generation = guard.start();
+describe('createReconnectGuard', () => {
+  it('allows a current socket to reconnect after an unexpected close', () => {
+    const guard = createReconnectGuard();
+    const generation = guard.start();
 
-  assert.equal(guard.canReconnect(generation), true);
-});
+    expect(guard.canReconnect(generation)).toBe(true);
+  });
 
-test('blocks a late close callback after the socket lifecycle is stopped', () => {
-  const guard = createReconnectGuard();
-  const generation = guard.start();
+  it('blocks a late close callback after the socket lifecycle is stopped', () => {
+    const guard = createReconnectGuard();
+    const generation = guard.start();
 
-  guard.stop();
+    guard.stop();
 
-  assert.equal(guard.canReconnect(generation), false);
-});
+    expect(guard.canReconnect(generation)).toBe(false);
+  });
 
-test('invalidates an older socket when a new lifecycle starts', () => {
-  const guard = createReconnectGuard();
-  const oldGeneration = guard.start();
-  const newGeneration = guard.start();
+  it('invalidates an older socket when a new lifecycle starts', () => {
+    const guard = createReconnectGuard();
+    const oldGeneration = guard.start();
+    const newGeneration = guard.start();
 
-  assert.equal(guard.canReconnect(oldGeneration), false);
-  assert.equal(guard.canReconnect(newGeneration), true);
+    expect(guard.canReconnect(oldGeneration)).toBe(false);
+    expect(guard.canReconnect(newGeneration)).toBe(true);
+  });
 });

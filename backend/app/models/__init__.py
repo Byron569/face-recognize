@@ -4,7 +4,7 @@ from __future__ import annotations
 from .base import Base
 from .camera import Camera
 from .identity import Identity, IdentityEmbedding
-from .event import Event, EventType, RecognitionLog
+from .event import Event, EventOutbox, EventType, RecognitionLog
 
 __all__ = [
     "Base",
@@ -12,6 +12,7 @@ __all__ = [
     "Identity",
     "IdentityEmbedding",
     "Event",
+    "EventOutbox",
     "EventType",
     "RecognitionLog",
 ]

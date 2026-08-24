@@ -2,6 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { Alert } from 'antd';
 import { eventMeta } from '../config';
 import { createReconnectGuard } from '../hooks/reconnectGuard';
+import {
+  createEventDedupe,
+  EventDedupe,
+  isFallType,
+} from '../stream/eventDedupe';
 
 interface AlertItem {
   id: string | number;
@@ -36,17 +41,27 @@ const alertTypeOf: Record<string, 'error' | 'warning' | 'info'> = {
 
 const MAX_ALERTS = 3;
 
+interface AlertBannerProps {
+  /** 测试注入口：可靠 fall 事件去重器。缺省时使用 sessionStorage 版默认去重。 */
+  dedupe?: EventDedupe;
+}
+
 /**
  * 事件提示条(页面内嵌、不悬浮遮挡画面):
  * - 普通文档流布局,位于页面内容顶部,不覆盖视频
  * - 同一摄像头 + 同类型事件合并计数,避免刷屏
+ * - 可靠 fall 事件经 eventDedupe 幂等门禁:同一 event_id / dedupe_key 的 WS 帧、
+ *   断线重连重放、outbox at-least-once 重送都不会新增 alert 或增加合并 count
  */
-export default function AlertBanner() {
+export default function AlertBanner({ dedupe }: AlertBannerProps = {}) {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const reconnectGuard = useRef(createReconnectGuard());
   const idCounter = useRef(0);
+  const dedupeRef = useRef<EventDedupe | null>(null);
+  if (dedupeRef.current === null) dedupeRef.current = dedupe ?? createEventDedupe();
+  const protocolErrors = useRef(0);
 
   useEffect(() => {
     return alertBus.subscribe((alert) => {
@@ -78,6 +93,17 @@ export default function AlertBanner() {
           const data = JSON.parse(event.data);
           if (data.type === 'ping') return;
           if (data.type === 'event' || data.event_type) {
+            // 可靠 fall 事件:先过幂等门禁,再进入合并/计数
+            if (isFallType(data.event_type)) {
+              const decision = dedupeRef.current!.classify(data);
+              if (decision.status === 'duplicate') return; // 同 key:不新增、不计数
+              if (decision.status === 'rejected') {
+                // 缺少 event_id/dedupe_key:拒绝告警并记录协议错误
+                protocolErrors.current += 1;
+                return;
+              }
+              // status === 'new':正常进入合并
+            }
             // 后端格式: {"type":"event","event_type":"recognition","camera_id":"cam0","payload":{"name":"..."},...}
             alertBus.push({
               id: data.id ?? ++idCounter.current,

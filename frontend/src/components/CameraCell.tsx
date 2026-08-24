@@ -5,6 +5,12 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { snapshotCamera } from '../api/cameras';
 import { detectionColors, videoConfig } from '../config';
 import { DecodedFramePacket, parseFramePacket } from '../stream/frameProtocol';
+import {
+  FallAnalytics,
+  FallOverlayCache,
+  parseAnalyticsMessage,
+} from '../stream/analyticsProtocol';
+import { drawFallAnalytics } from '../stream/fallOverlay';
 
 interface Detection {
   track_id: number;
@@ -30,7 +36,23 @@ export default function CameraCell({ cameraId, title, profile }: Props) {
   const canvasSizeRef = useRef({ width: 0, height: 0 });
   const mountedRef = useRef(true);
   const scheduleDrawRef = useRef<() => void>(() => {});
+  const overlayCacheRef = useRef<FallOverlayCache | null>(null);
+  const activeOverlayRef = useRef<FallAnalytics | null>(null);
+  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentSessionRef = useRef<string | null>(null);
   const [hasVideo, setHasVideo] = useState(false);
+  const fallOverlayCache: FallOverlayCache = (() => {
+    if (!overlayCacheRef.current) overlayCacheRef.current = new FallOverlayCache(64);
+    return overlayCacheRef.current;
+  })();
+
+  const clearOverlayTimer = useCallback(() => {
+    if (overlayTimerRef.current !== null) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
+    activeOverlayRef.current = null;
+  }, []);
 
   const drawLatestFrame = useCallback(async () => {
     const frame = pendingFrameRef.current;
@@ -58,6 +80,11 @@ export default function CameraCell({ cameraId, title, profile }: Props) {
       ctx.drawImage(bitmap, 0, 0);
       for (const detection of detectionsByFrameRef.current.get(frame.frameId) || []) {
         drawDetection(ctx, detection);
+      }
+      // M2:跌倒骨架叠加(仅在 overlay 与该 JPEG 帧匹配时绘制,按 preview 像素)
+      const overlay = activeOverlayRef.current;
+      if (overlay) {
+        drawFallAnalytics(ctx, overlay, frame.frameId, bitmap.width, bitmap.height);
       }
       for (const id of detectionsByFrameRef.current.keys()) {
         if (id < frame.frameId - 30) detectionsByFrameRef.current.delete(id);
@@ -107,8 +134,41 @@ export default function CameraCell({ cameraId, title, profile }: Props) {
       for (const id of detectionsByFrameRef.current.keys()) {
         if (id < frameId - 30) detectionsByFrameRef.current.delete(id);
       }
+      return;
     }
-  }, []);
+    if (data.type === 'analytics') {
+      const parsed = parseAnalyticsMessage(JSON.stringify(data));
+      if (!parsed.ok) return; // 协议无效则丢弃该 overlay
+      const a = parsed.analytics;
+      if (currentSessionRef.current !== a.cameraSessionId) {
+        currentSessionRef.current = a.cameraSessionId;
+        fallOverlayCache.clearSession(a.cameraSessionId);
+        clearOverlayTimer();
+      }
+      const expiresInMs = a.overlayExpiresInMs;
+      if (expiresInMs !== null && expiresInMs <= 0) {
+        clearOverlayTimer();
+        return;
+      }
+      const deadline = performance.now() + (expiresInMs ?? 0);
+      fallOverlayCache.set(a.cameraSessionId, a.previewFrameId, { analytics: a, deadline });
+      activeOverlayRef.current = a;
+      if (overlayTimerRef.current !== null) clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = setTimeout(() => {
+        overlayTimerRef.current = null;
+        activeOverlayRef.current = null;
+        if (mountedRef.current && lastFrameRef.current) {
+          pendingFrameRef.current = lastFrameRef.current;
+          scheduleDrawRef.current();
+        }
+      }, expiresInMs ?? 0);
+      if (lastFrameRef.current?.frameId === a.previewFrameId && !pendingFrameRef.current) {
+        pendingFrameRef.current = lastFrameRef.current;
+        scheduleDrawRef.current();
+      }
+      return;
+    }
+  }, [clearOverlayTimer, fallOverlayCache]);
 
   useWebSocket(`/ws/cameras/${cameraId}`, handleMessage, 2000, 'arraybuffer');
 
@@ -121,8 +181,9 @@ export default function CameraCell({ cameraId, title, profile }: Props) {
         cancelAnimationFrame(animationFrameRef.current);
       }
       drawScheduledRef.current = false;
+      clearOverlayTimer();
     };
-  }, []);
+  }, [clearOverlayTimer]);
 
   const handleSnapshot = async () => {
     try {

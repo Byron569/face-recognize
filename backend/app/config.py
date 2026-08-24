@@ -55,6 +55,24 @@ def get_settings() -> Settings:
 
 
 # ──────────────────────────────────────────────────────────────
+# 集成测试模式(默认关闭,仅显式环境注入才启用)
+# ──────────────────────────────────────────────────────────────
+# 与 AI_MONITOR_TEST_DATABASE_URL 一致,读取无前缀的环境变量(不走 Settings 的
+# env_prefix),确保测试编排能按既定变量名控制。关闭时 /health 绝不暴露任何
+# marker,也绝不注入 run_id,避免扩大生产 API 面或泄漏随机标识。
+
+def test_mode_enabled() -> bool:
+    """AI_MONITOR_TEST_MODE 显式为 1/true/yes/on 才启用(默认关闭)。"""
+    val = os.environ.get("AI_MONITOR_TEST_MODE", "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def test_run_id() -> str:
+    """本次集成测试注入的随机 run id;未启用/未注入则返回空。"""
+    return os.environ.get("AI_MONITOR_TEST_RUN_ID", "").strip()
+
+
+# ──────────────────────────────────────────────────────────────
 # YAML 级联合并
 # ──────────────────────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Enum as SAEnum,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -74,3 +76,36 @@ class Event(Base):
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+
+    # ── 可靠事件幂等字段(跌倒检测等扩展任务)──────────────
+    # source_event_id 是 Worker 生成的 transition UUID,不是数据库主键
+    incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="alert")
+
+
+class EventOutbox(Base):
+    """event_outbox 表:通用事务型 outbox。
+
+    at-least-once 广播给 WebSocket;数据库 exactly-once 由 dedupe_key 唯一约束 + 原子
+    ON CONFLICT 保证。event_row_id 仅指向 events 自增主键,绝不叫 event_id。
+    """
+
+    __tablename__ = "event_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_row_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("events.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    delivery_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

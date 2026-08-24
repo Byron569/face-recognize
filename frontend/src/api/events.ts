@@ -13,6 +13,12 @@ export interface EventItem {
   acknowledged: boolean;
   acknowledged_at: string | null;
   created_at: string;
+  /** 可靠 fall 事件幂等字段(可选;旧 recognition 事件为 null,保持向后兼容) */
+  event_id?: string | null;
+  incident_id?: string | null;
+  dedupe_key?: string | null;
+  occurred_at?: string | null;
+  delivery_mode?: string | null;
 }
 
 export const fetchEvents = (params: Record<string, unknown>) =>

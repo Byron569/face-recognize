@@ -29,7 +29,7 @@ class LatestFrameSender:
         self.websocket = websocket
         self._on_disconnect = on_disconnect
         self._on_sent = on_sent
-        self._pending: tuple[bytes, str] | None = None
+        self._pending: tuple[bytes, str, str | None] | None = None
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -41,12 +41,13 @@ class LatestFrameSender:
         if self._task is None:
             self._task = asyncio.create_task(self._run())
 
-    def offer(self, frame_packet: bytes, detections_json: str) -> None:
+    def offer(self, frame_packet: bytes, detections_json: str,
+              analytics_json: str | None = None) -> None:
         if self._closed:
             return
         if self._pending is not None:
             self.dropped_frames += 1
-        self._pending = (frame_packet, detections_json)
+        self._pending = (frame_packet, detections_json, analytics_json)
         self._idle.clear()
         self._wake.set()
 
@@ -78,10 +79,12 @@ class LatestFrameSender:
                         self._idle.set()
                         break
                     self._pending = None
-                    packet, detections_json = pending
+                    packet, detections_json, analytics_json = pending
                     try:
                         await self.websocket.send_bytes(packet)
                         await self.websocket.send_text(detections_json)
+                        if analytics_json is not None:
+                            await self.websocket.send_text(analytics_json)
                     except Exception:  # noqa: BLE001
                         self._closed = True
                         self._pending = None

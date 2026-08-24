@@ -137,6 +137,8 @@ class VisionPipeline(threading.Thread):
             frame_id=self._frame_id,
             frame=frame,
             tracks=tracks,
+            observed_at_monotonic_ns=time.monotonic_ns(),
+            observed_at_utc=time.time(),
         )
         for task in self._tasks:
             if not task.enabled:

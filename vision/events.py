@@ -89,3 +89,6 @@ class PipelineContext:
     frame_id: int
     frame: Any
     tracks: List[TrackResult] = field(default_factory=list)
+    observed_at_monotonic_ns: Optional[int] = None
+    observed_at_utc: Optional[float] = None
+    analytics: Dict[str, Any] = field(default_factory=dict)

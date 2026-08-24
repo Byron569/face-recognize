@@ -17,6 +17,12 @@ class EventOut(BaseModel):
     acknowledged: bool = False
     acknowledged_at: datetime | None = None
     created_at: datetime
+    # 可靠事件幂等字段(可选,旧 recognition 事件为 null,保持向后兼容)
+    event_id: str | None = None        # source_event_id(Worker transition UUID)
+    incident_id: str | None = None
+    dedupe_key: str | None = None
+    occurred_at: datetime | None = None
+    delivery_mode: str | None = None
 
 
 class EventListOut(BaseModel):

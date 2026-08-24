@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Table, Tag, Select, Button, Space, message, Card, Badge, Popconfirm, Grid } from 'antd';
+import { Table, Tag, Select, Button, Space, message, Card, Badge, Popconfirm, Grid, Tooltip } from 'antd';
 import { CheckCircleOutlined, WarningOutlined, UserSwitchOutlined, AlertOutlined, ClockCircleOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchEvents, acknowledgeEvent, deleteEvents, deleteAllEvents, EventItem } from '../api/events';
@@ -13,6 +13,30 @@ const eventIconMap: Record<string, React.ReactNode> = {
   user: <UserSwitchOutlined />,
   clock: <ClockCircleOutlined />,
 };
+
+const FALL_SCORE_SEMANTICS = 'heuristic_rule_score_not_probability';
+
+/**
+ * fall_ 事件渲染「规则分数（非概率）」:
+ * - 校验 payload.score_semantics = 'heuristic_rule_score_not_probability',
+ *   一致时显示原值而非百分比;
+ * - 缺失/不匹配时显示协议异常,绝不猜成概率。
+ */
+function renderFallScore(record: EventItem): React.ReactNode {
+  const semantics = record.payload?.score_semantics;
+  if (semantics !== FALL_SCORE_SEMANTICS) {
+    return (
+      <Tooltip title={`缺少/不匹配 score_semantics(实际 ${String(semantics)})，不得按概率解读`}>
+        <span style={{ color: '#ff4d4f', fontWeight: 600 }}>协议异常</span>
+      </Tooltip>
+    );
+  }
+  return (
+    <span style={{ fontSize: 13 }}>
+      规则分数 <strong style={{ color: '#555' }}>{String(record.confidence)}</strong>（非概率）
+    </span>
+  );
+}
 
 export default function EventLogPage() {
   const [page, setPage] = useState(1);
@@ -121,7 +145,10 @@ export default function EventLogPage() {
       dataIndex: 'confidence',
       key: 'confidence',
       width: 100,
-      render: (v: number) => {
+      render: (_: number, record: EventItem) => {
+        // fall 事件:规则分数(非概率),不做百分比处理
+        if (record.event_type.startsWith('fall_')) return renderFallScore(record);
+        const v = record.confidence;
         if (!v || v <= 0) return <span style={{ color: '#bbb' }}>-</span>;
         const pct = (v * 100).toFixed(0);
         const color = Number(pct) >= 80 ? '#52c41a' : Number(pct) >= 60 ? '#fa8c16' : '#ff4d4f';

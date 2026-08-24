@@ -91,6 +91,12 @@ class EventService:
             "acknowledged": ev.acknowledged,
             "acknowledged_at": ev.acknowledged_at,
             "created_at": ev.created_at,
+            # 可靠事件幂等字段(可选,旧 recognition 事件为 null)
+            "event_id": getattr(ev, "source_event_id", None),
+            "incident_id": getattr(ev, "incident_id", None),
+            "dedupe_key": getattr(ev, "dedupe_key", None),
+            "occurred_at": getattr(ev, "occurred_at", None),
+            "delivery_mode": getattr(ev, "delivery_mode", None),
         }
 
     @staticmethod
