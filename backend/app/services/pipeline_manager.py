@@ -344,6 +344,14 @@ class PipelineManager:
             # 惰性注入姿态 Runtime 工厂 + 生产 process_factory(启用时才引入姿态包;
             # import 不加载模型/不启 Worker;首个有效上下文 acquire 时才拉起真实 GPU 进程)
             from pathlib import Path as _Path
+
+            # fall 配置的持久化路径在 build_camera_config 已解析为绝对路径(相对仓库根);
+            # 这里自动创建 var 目录,保证 clone 即跑的便携部署下 journal/spool 可落盘
+            rt_cfg = fall_cfg.get("runtime") or {}
+            for _p in (rt_cfg.get("worker_journal_path"), rt_cfg.get("event_spool_path")):
+                if _p:
+                    _Path(str(_p)).parent.mkdir(parents=True, exist_ok=True)
+
             from ai_monitor_pose.runtime_registry import PoseRuntimeRegistry
             from ai_monitor_pose.worker.launcher import build_worker_process_factory
 

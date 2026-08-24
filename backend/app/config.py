@@ -121,14 +121,40 @@ def resolve_project_path(relative: str) -> str:
     return str((Path(settings.project_root).resolve() / p))
 
 
+_FALL_PATH_KEYS = (
+    ("worker", "python"),
+    ("model", "path"),
+    ("model", "sha256_file"),
+    ("runtime", "capacity_manifest_path"),
+    ("runtime", "worker_journal_path"),
+    ("runtime", "event_spool_path"),
+)
+
+
+def _resolve_fall_paths(merged: Dict[str, Any]) -> Dict[str, Any]:
+    """把 tasks.fall_detection 的相对路径解析为基于项目根(仓库根)的绝对路径。
+
+    ai_monitor_pose.config.FallTaskConfig 构造期硬约束这些字段必须为绝对路径
+    (design contract),故在产出最终摄像头配置时统一解析,做到 clone 即跑的便携部署。
+    """
+    fd = ((merged.get("tasks") or {}).get("fall_detection") or {})
+    if not isinstance(fd, dict):
+        return merged
+    for section, key in _FALL_PATH_KEYS:
+        node = fd.get(section)
+        if isinstance(node, dict) and node.get(key):
+            node[key] = resolve_project_path(str(node[key]))
+    return merged
+
+
 def build_camera_config(
     profile: str,
     camera_extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """为单个摄像头产出最终配置(default → profile → camera_extra)。
 
-    顺带把相对路径(vision.models_root 等)解析为绝对路径,
-    保证任何工作目录下运行都正确。
+    顺带把相对路径(vision.models_root、tasks.fall_detection 各持久化/worker 路径等)
+    解析为绝对路径,保证任何工作目录下运行都正确。
     """
     merged = load_profile_config(profile)
     # 摄像头个性化配置直接合并到根(extra 里可含 vision/tasks/... 任意节)
@@ -136,4 +162,5 @@ def build_camera_config(
     vision_cfg = merged.get("vision") or {}
     if isinstance(vision_cfg, dict) and vision_cfg.get("models_root"):
         vision_cfg["models_root"] = resolve_project_path(str(vision_cfg["models_root"]))
+    _resolve_fall_paths(merged)
     return merged

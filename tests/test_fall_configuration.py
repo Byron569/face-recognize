@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 
-from backend.app.config import load_profile_config
+from backend.app.config import build_camera_config
 
 
 def _fall(cfg: dict) -> dict:
@@ -25,15 +25,15 @@ def _require(fall: dict, section: str) -> dict:
     return out
 
 
-def test_fall_detection_baseline_present_and_disabled() -> None:
-    fall = _fall(load_profile_config(None))
+def test_fall_detection_baseline_present_and_enabled() -> None:
+    fall = _fall(build_camera_config(None))
     assert fall.get("class_path") == "ai_monitor_pose.task.FallDetectionTask"
-    assert fall.get("enabled", True) is False  # 默认必须关闭
+    assert fall.get("enabled", True) is True  # 基线默认启用(实时人体框/骨骼叠加)
     assert fall.get("mode") in {"shadow", "alert"}
 
 
 def test_fall_gpu_never_falls_back_to_cpu() -> None:
-    gpu = _require(_fall(load_profile_config(None)), "gpu")
+    gpu = _require(_fall(build_camera_config(None)), "gpu")
     assert gpu.get("required") is True
     assert gpu.get("allow_cpu_fallback") is False
     dev = str(gpu.get("device", ""))
@@ -42,7 +42,7 @@ def test_fall_gpu_never_falls_back_to_cpu() -> None:
 
 
 def test_fall_model_never_downloads_and_paths_are_absolute() -> None:
-    fall = _fall(load_profile_config(None))
+    fall = _fall(build_camera_config(None))
     model = _require(fall, "model")
     assert model.get("allow_download") is False
     for key in ("path", "sha256_file"):
@@ -52,20 +52,20 @@ def test_fall_model_never_downloads_and_paths_are_absolute() -> None:
 
 
 def test_fall_runtime_persistence_paths_are_absolute() -> None:
-    rt = _require(_fall(load_profile_config(None)), "runtime")
+    rt = _require(_fall(build_camera_config(None)), "runtime")
     for key in ("worker_journal_path", "event_spool_path", "capacity_manifest_path"):
         assert os.path.isabs(str(rt.get(key))), f"runtime.{key} 必须为绝对路径"
 
 
-def test_profiles_do_not_enable_fall_by_default() -> None:
-    # 每个 profile 只允许覆盖 enabled/mode/target_fps;M1 默认不启用,不得在 profile 静默打开
+def test_profiles_inherit_fall_enabled_from_baseline() -> None:
+    # 每个 profile 只允许覆盖 enabled/mode/target_fps;未覆盖时继承基线默认启用
     for profile in ("desktop", "balanced", "edge_minimal"):
-        fall = _fall(load_profile_config(profile))
-        assert fall.get("enabled", False) is False, f"{profile} 不应默认启用 fall_detection"
+        fall = _fall(build_camera_config(profile))
+        assert fall.get("enabled", True) is True, f"{profile} 应继承基线启用 fall_detection"
 
 
 def test_delivery_capacity_boundaries() -> None:
-    d = _require(_fall(load_profile_config(None)), "delivery")
+    d = _require(_fall(build_camera_config(None)), "delivery")
     assert int(d.get("ingress_queue_capacity", 0)) > 0
     assert int(d.get("outbox_pending_capacity", 0)) > 0
     ratio = float(d.get("outbox_resume_ratio", 0))
