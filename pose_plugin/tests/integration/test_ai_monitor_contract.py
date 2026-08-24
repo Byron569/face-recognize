@@ -33,7 +33,7 @@ class FakeRuntime:
 class SharedFactory:
     """模拟注册表：同一 runtime_key 返回同一 lease。"""
     def __init__(self, rt): self.rt = rt
-    def acquire(self, runtime_key, config, event_sink, process_factory=None): return self.rt
+    def acquire(self, runtime_key, config, event_sink, process_factory=None, **_kwargs): return self.rt
 
 
 def _cfg():

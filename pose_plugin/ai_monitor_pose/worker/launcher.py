@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 import ctypes
 import ctypes.wintypes as w
@@ -140,6 +141,9 @@ class PipedChild:
         self.pid = handle.pid
         self._stdin = stdin_file  # 父端 -> 子端的写 file-like
         self._stdout = stdout_file  # 子端 -> 父端的读 file-like
+        # 写互斥:offer_frame 线程与心跳看门狗线程会并发 write 同一管道,
+        # 4 字节长度前缀帧绝不能交错;同时保证部分写时循环写满
+        self._write_lock = threading.Lock()
 
     @property
     def stdout(self):
@@ -149,8 +153,15 @@ class PipedChild:
     def write(self, msg: dict) -> None:
         from ..ipc import encode_message  # 惰性，避免模块导入开销
 
-        self._stdin.write(encode_message(msg))
-        self._stdin.flush()
+        data = encode_message(msg)
+        with self._write_lock:
+            view = memoryview(data)
+            while view:
+                n = self._stdin.write(view)
+                if not n:  # raw FileIO 部分写语义:0 字节=管道断开
+                    raise BrokenPipeError("worker pipe write returned 0 bytes")
+                view = view[n:]
+            self._stdin.flush()
 
     def is_alive(self) -> bool:
         return bool(self._handle.is_alive)

@@ -5,21 +5,11 @@
 #   configs/default.yaml  →  configs/profiles/{profile}.yaml  →  数据库 cameras.config(JSONB)  →  .env / 环境变量
 #
 # 设计原则: 所有可调参数集中于此,代码中不允许出现硬编码数值。
+#
+# 注意: 服务级配置(数据库连接/主机端口/CORS 白名单/清理计划)不在此文件,
+# 由 backend pydantic Settings 经 .env / 环境变量(AIM_DATABASE_URL、
+# AIM_CORS_ORIGINS、AIM_EVENT_RETENTION_DAYS 等)提供。
 # ============================================================================
-
-# ── 后端服务 ────────────────────────────────────────────────
-server:
-  host: "0.0.0.0"
-  port: 8000
-  cors_origins: ["*"]
-
-# ── 数据库 ──────────────────────────────────────────────────
-database:
-  url: "postgresql+asyncpg://postgres:123456@localhost:5432/ai_monitor"
-
-# ── 存储路径(相对项目根)────────────────────────────────────
-storage:
-  avatars_dir: "face_db/avatars"
 
 # ── 视频流(WebSocket → 前端)────────────────────────────────
 stream:
@@ -29,7 +19,11 @@ stream:
 
 # ── InsightFace 视觉内核(推理默认 GPU)───────────────────────
 vision:
-  model_pack: "buffalo_l"          # insightface 模型包(buffalo_l 高精度 / buffalo_s 轻量 / buffalo_sc)
+  model_pack: "buffalo_l"          # insightface 模型包(buffalo_l 高精度 / buffalo_s 轻量 / buffalo_sc)。
+                                  # ⚠ 底库 embedding 与模型包强绑定:已有特征均为 buffalo_l 提取,
+                                  # 切换其他 pack 会导致跨模型余弦相似度跌破阈值、识别全部失效,
+                                  # 必须重新注册全部人脸。buffalo_l 超 GitHub 单文件限制不入 git,
+                                  # 新环境 clone 后需自行下载解压到 models/buffalo_l/(见 .gitignore)。
   models_root: "models"            # 模型根目录(相对项目根;也支持绝对路径或 ~/.insightface)
   device: "cuda"                   # cuda(默认,全部推理走 GPU)/ cpu / auto(自动检测)
   providers_cuda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -209,8 +203,3 @@ camera_defaults:
   height: 480
   max_width: 0        # 采集兜底缩放上限(0 = 不缩放)
   profile: "desktop"
-
-# ── 数据清理 ────────────────────────────────────────────────
-cleanup:
-  event_retention_days: 30
-  cron_hour: 3

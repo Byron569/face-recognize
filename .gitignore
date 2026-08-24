@@ -46,6 +46,9 @@ ai monitor/
 # pose_plugin 拷贝的姿态项目源码：排除大件/环境/缓存
 pose_plugin/.venv-worker/
 pose_plugin/models/*.pt
+# TensorRT 引擎(机器特定产物)与 ONNX 导出中间产物, 均不入库
+pose_plugin/models/*.onnx
+pose_plugin/models/*.engine
 pose_plugin/fixtures/*.mp4
 pose_plugin/**/__pycache__/
 pose_plugin/.pytest_cache/
@@ -54,3 +57,10 @@ pose_plugin/**/*.pyc
 pose_plugin/**/*.pyo
 # 姿态 Worker 运行时产物(事件归档 SQLite, 不随仓库分发)
 pose_plugin/var/
+
+# 根目录临时融合文档与调试脚本目录(不入库)
+融合实施_work/
+修改文档.md
+修改文档.txt
+融合实施.md
+融合实施_HANDOFF.md

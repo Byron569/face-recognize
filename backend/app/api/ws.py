@@ -6,10 +6,8 @@ import logging
 
 import json
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..deps import get_db
 from ..services.camera_service import CameraService
 
 from ..services.pipeline_manager import get_pipeline_manager
@@ -22,10 +20,14 @@ router = APIRouter()
 async def camera_stream(
     websocket: WebSocket,
     camera_id: str,
-    db: AsyncSession = Depends(get_db),
 ):
     await websocket.accept()
-    camera = await CameraService(db).get(camera_id)
+    # 不用 Depends(get_db):生成器依赖随 WS 整个生命周期(可达数小时)持有连接,
+    # 16 路监控页即可占满连接池(5+10)。改为短暂查询 camera 后立即释放。
+    from ..deps import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        camera = await CameraService(db).get(camera_id)
     if not camera:
         await websocket.send_text(json.dumps({"type": "error", "message": "camera not found"}))
         await websocket.close()

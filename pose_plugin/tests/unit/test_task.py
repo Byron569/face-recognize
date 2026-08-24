@@ -65,7 +65,7 @@ def _cfg(enabled=True):
 class _Factory:
     def __init__(self, runtimes=None):
         self.runtimes = list(runtimes or [])
-    def acquire(self, runtime_key, config, event_sink, process_factory=None):
+    def acquire(self, runtime_key, config, event_sink, process_factory=None, **_kwargs):
         return self.runtimes.pop(0)
 
 

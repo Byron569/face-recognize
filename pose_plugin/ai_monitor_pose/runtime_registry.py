@@ -36,7 +36,12 @@ class PoseRuntimeRegistry:
     _fingerprints: dict[str, str] = {}
 
     @classmethod
-    def acquire(cls, runtime_key: str, config: RuntimeConfig, event_sink: Any | None, *, process_factory=None, restart_limit: int = 3, retry_delay_s: float = 0.0) -> PoseRuntimeLease:
+    def acquire(cls, runtime_key: str, config: RuntimeConfig, event_sink: Any | None, *, process_factory=None, restart_limit: int = 3, retry_delay_s: float = 0.0, heartbeat_interval_s: float = 0, heartbeat_timeout_s: float = 0, mode: str = "shadow") -> PoseRuntimeLease:
+        """获取（或复用）runtime_key 对应的 PoseRuntime lease。
+
+        mode 不参与配置指纹校验：runtime 已存在时复用先创建者的 mode
+        （与 event_sink 首次绑定行为一致，先到先得），仅新建时透传给 PoseRuntime。
+        """
         with cls._lock:
             fp = _fingerprint(config)
             if runtime_key in cls._runtimes:
@@ -49,7 +54,7 @@ class PoseRuntimeRegistry:
                 if event_sink is not None and bound is None:
                     cls._sinks[runtime_key] = event_sink
             else:
-                rt = PoseRuntime(config, process_factory=process_factory, restart_limit=restart_limit, retry_delay_s=retry_delay_s, event_sink=event_sink)
+                rt = PoseRuntime(config, process_factory=process_factory, restart_limit=restart_limit, retry_delay_s=retry_delay_s, event_sink=event_sink, heartbeat_interval_s=heartbeat_interval_s, heartbeat_timeout_s=heartbeat_timeout_s, mode=mode)
                 cls._runtimes[runtime_key] = rt
                 cls._fingerprints[runtime_key] = fp
                 cls._sinks[runtime_key] = event_sink

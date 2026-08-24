@@ -39,19 +39,17 @@ class EnginePool:
 
     def get(self, cfg: VisionConfig) -> InsightFaceEngine:
         key = self._key(cfg)
+        # 全程持锁:创建(重模型加载)是低频操作,并发调用者阻塞等待即可;
+        # 旧实现锁外构造,双检输家直接丢弃自建引擎且从不 close → GPU 显存泄漏。
+        # close_all/count 均为独立加锁(无嵌套),普通 Lock 即可。
         with self._lock:
             engine = self._engines.get(key)
-        if engine is not None:
-            return engine
-        logger.info("[engine-pool] creating engine: %s", key)
-        engine = InsightFaceEngine(cfg)
-        with self._lock:
-            # 双检,避免并发重复创建
-            existing = self._engines.get(key)
-            if existing is not None:
-                return existing
+            if engine is not None:
+                return engine
+            logger.info("[engine-pool] creating engine: %s", key)
+            engine = InsightFaceEngine(cfg)
             self._engines[key] = engine
-        return engine
+            return engine
 
     def close_all(self) -> None:
         with self._lock:

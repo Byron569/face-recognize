@@ -11,6 +11,7 @@ vision.camera — 帧采集层。
 from __future__ import annotations
 
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Tuple
@@ -68,7 +69,15 @@ class OpenCVFrameSource(FrameSource):
         try:
             # RTSP 等网络流设置超时,避免卡死
             if isinstance(self._source, str) and not self._source.isdigit():
+                # 注意: 该 env 必须在首个 FFMPEG capture 构造前设置才生效(构造即打开,
+                # 构造后的 cap.set 对 open 阶段无效), 进程级生效故用 setdefault 尊重用户
+                # 已有设置; timeout 为 ffmpeg tcp 超时(μs), 此处 5s。
+                os.environ.setdefault(
+                    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                    "rtsp_transport;tcp|timeout;5000000",
+                )
                 cap = cv2.VideoCapture(self._source, cv2.CAP_FFMPEG)
+                # 对 read 阶段可能仍有效(open 已完成,对 open 超时无效),保留无害
                 cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
                 cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
             else:

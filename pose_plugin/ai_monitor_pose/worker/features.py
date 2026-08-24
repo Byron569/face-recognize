@@ -105,6 +105,7 @@ class FallEvidence:
     dynamic_gravity: bool
     fast_dynamic: bool
     rule_score: float
+    vertical_velocity_px_s: float = 0.0
     score_semantics: str = SCORE_SEMANTICS
     evidence_codes: tuple[str, ...] = ()
 
@@ -202,5 +203,6 @@ def compute_evidence(
         dynamic_gravity=dynamic_gravity,
         fast_dynamic=fast_dynamic,
         rule_score=rule_score,
+        vertical_velocity_px_s=cur_vy,
         evidence_codes=tuple(codes),
     )

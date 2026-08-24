@@ -9,16 +9,6 @@ from __future__ import annotations
 
 import json
 import struct
-
-
-def _trace(*parts) -> None:
-    try:
-        import time as _t
-        line = _t.strftime("%H:%M:%S") + " " + " ".join(str(p) for p in parts) + "\n"
-        with open(r"D:\ai-monitor-1.1.0\融合实施_work\pose_trace.log", "a") as f:
-            f.write(line)
-    except Exception:
-        pass
 import threading
 import time
 import uuid
@@ -38,6 +28,9 @@ from .health import (
     WorkerHealthV1,
 )
 from .ipc import decode_message, encode_message
+
+# journal drain 最小间隔（纳秒）：250ms
+_DRAIN_THROTTLE_NS = 250_000_000
 
 
 class RuntimeOfferOutcome(str, Enum):
@@ -111,8 +104,16 @@ class PoseRuntimeLease:
 class PoseRuntime:
     def __init__(self, config: RuntimeConfig, *, process_factory=None,
                  restart_limit: int = 3, retry_delay_s: float = 0.0,
-                 event_sink=None, drain_max_attempts: int = 5) -> None:
+                 event_sink=None, drain_max_attempts: int = 5,
+                 heartbeat_interval_s: float = 0, heartbeat_timeout_s: float = 0,
+                 mode: str = "shadow") -> None:
         self.config = config
+        # 任务级运行模式（FallTaskConfig.mode：shadow/alert），透传到 health_snapshot
+        self._mode = mode
+        self._heartbeat_interval_s = max(0.0, float(heartbeat_interval_s))
+        self._heartbeat_timeout_s = max(0.0, float(heartbeat_timeout_s))
+        self._last_pong_monotonic_ns: int | None = None
+        self._heartbeat_thread: threading.Thread | None = None
         self._factory = process_factory or (lambda: _null_factory_child())
         self.restart_limit = max(0, restart_limit)
         self.retry_delay_s = retry_delay_s
@@ -148,6 +149,8 @@ class PoseRuntime:
         self._replaced_total: dict[tuple[str, str], int] = {}
         # journal drain 毒丸上限：连续投递失败达到该次数的事件落父端 spool 兜底并 ack
         self._drain_max_attempts = max(1, int(drain_max_attempts))
+        # drain 节流：距上次实际 drain 不足 250ms 直接跳过（pending 不丢，顺延到下一时间片）
+        self._last_drain_monotonic_ns = 0
 
     # ---------------- 启动 / 停止 ----------------
     def start(self) -> None:
@@ -167,9 +170,17 @@ class PoseRuntime:
                 self._reader = threading.Thread(target=self._read_loop, args=(child, out), daemon=True)
                 self._reader.start()
             # 无可用 stdout（StubChild）则不启动读线程，状态保持 STARTING
+            if self._heartbeat_interval_s > 0 and (
+                self._heartbeat_thread is None or not self._heartbeat_thread.is_alive()
+            ):
+                self._heartbeat_thread = threading.Thread(
+                    target=self._heartbeat_loop, daemon=True)
+                self._heartbeat_thread.start()
 
     def _spawn_new_epoch(self) -> None:
         self._epoch = None
+        # 新 epoch 的 PONG 重新计时，避免旧 PONG 时间戳误判新 worker 超时
+        self._last_pong_monotonic_ns = None
         self._worker_instance_id = None
         self._worker_pid = None
         self._close_current_child()
@@ -227,6 +238,9 @@ class PoseRuntime:
         r = self._reader
         if r is not None and r.is_alive():
             r.join(timeout=2.0)
+        hb = self._heartbeat_thread
+        if hb is not None and hb.is_alive():
+            hb.join(timeout=2.0)
         with self._lock:
             self._state = STOPPED
 
@@ -324,6 +338,9 @@ class PoseRuntime:
                         # latest-only 替换：覆盖了尚未消费的旧最新结果
                         self._bump(self._replaced_total, key)
                 self._drain_journal()
+        elif mt == "PONG":
+            # epoch 一致性校验通过后才记录：只认当前 worker 的心跳
+            self._last_pong_monotonic_ns = time.monotonic_ns()
         elif mt == "WORKER_ERROR":
             payload = msg.get("payload") or {}
             with self._lock:
@@ -372,7 +389,6 @@ class PoseRuntime:
                                        "camera_session_id": camera_session_id,
                                        "frame_id": frame_id,
                                        "config_revision": config_revision,
-                                       "fake_action": "ok",
                                    }})
             except Exception:
                 return RuntimeOfferOutcome.WORKER_NOT_READY
@@ -382,14 +398,14 @@ class PoseRuntime:
     def offer_frame(self, frame, request_meta) -> RuntimeOfferOutcome:
         camera_id = request_meta.camera_id
         camera_session_id = request_meta.camera_session_id
-        _trace('R.offer_frame IN cam=%s sess=%s state=%s' % (camera_id, camera_session_id, self._state))
+        key = (camera_id, camera_session_id)
+        need_register = False
         with self._lock:
             if self._closed:
                 return RuntimeOfferOutcome.CLOSED
             if self._state != READY:
-                _trace('R.offer NOT_READY')
                 return RuntimeOfferOutcome.WORKER_NOT_READY
-            region = self._regions.get((camera_id, camera_session_id))
+            region = self._regions.get(key)
             if region is None:
                 from .shared_frames import FrameShmRegion, new_region_name
                 try:
@@ -399,25 +415,28 @@ class PoseRuntime:
                         max_height=self.config.max_frame_height,
                         slots=2,
                     )
-                except Exception as _e:
-                    _trace('R.offer REGION_CREATE_FAIL %s' % repr(_e))
+                except Exception:
                     return RuntimeOfferOutcome.WORKER_NOT_READY
-                self._regions[(camera_id, camera_session_id)] = region
-                if (camera_id, camera_session_id) not in self._registered:
-                    self._registered.add((camera_id, camera_session_id))
-                    self._send_register(camera_id, camera_session_id, request_meta.config_revision)
+                self._regions[key] = region
+                if key not in self._registered:
+                    self._registered.add(key)
+                    need_register = True
             # 环形轮转写槽：双槽上轮流写，避免两槽 activity 常驻导致 SlotBusy
-            ring = self._ring_by_camera
-            ri = ring.get((camera_id, camera_session_id), 0)
-            ring[(camera_id, camera_session_id)] = ri + 1
-            try:
-                ref = region.submit(
-                    frame,
-                    now_ns=request_meta.observed_at_monotonic_ns,
-                    prefer_slot=ri % region.slots,
-                )
-            except Exception:
-                return RuntimeOfferOutcome.NO_WRITABLE_SLOT
+            ri = self._ring_by_camera.get(key, 0)
+            self._ring_by_camera[key] = ri + 1
+        # 锁外重 I/O：REGISTER_CAMERA 管道写、1080p 帧共享内存 memcpy（毫秒级）。
+        # region 引用自 get 起不会被并发删除（unregister_camera 仅在任务关闭时调用），
+        # 多摄像头帧提交因此不再被全局锁串行化。
+        if need_register:
+            self._send_register(camera_id, camera_session_id, request_meta.config_revision)
+        try:
+            ref = region.submit(
+                frame,
+                now_ns=request_meta.observed_at_monotonic_ns,
+                prefer_slot=ri % region.slots,
+            )
+        except Exception:
+            return RuntimeOfferOutcome.NO_WRITABLE_SLOT
         try:
             self._child.write({
                 "message_type": "INFER_FRAME",
@@ -455,6 +474,36 @@ class PoseRuntime:
         except Exception:
             pass
 
+    def _heartbeat_loop(self) -> None:
+        """父端心跳看门狗：按 interval 发 PING，超过 timeout 未收到 PONG 判定 worker 挂死。
+
+        PING 发送失败（管道断开）由 read loop 的 EOF 路径处理，此处 continue 即可；
+        判定超时前必须至少收到过一次 PONG（_last_pong_monotonic_ns 非 None）。
+        """
+        interval = self._heartbeat_interval_s
+        timeout_ns = self._heartbeat_timeout_s * 1_000_000_000
+        while True:
+            time.sleep(interval)
+            if self._closed:
+                return
+            with self._lock:
+                child = self._child
+                epoch = self._epoch
+                state = self._state
+            if child is None or epoch is None or state != READY:
+                continue
+            try:
+                child.write({"message_type": "PING", "worker_epoch": epoch,
+                             "message_id": uuid.uuid4().hex,
+                             "payload": {"ping_id": uuid.uuid4().hex,
+                                         "parent_sent_ns": time.time_ns()}})
+            except Exception:
+                continue
+            last_pong = self._last_pong_monotonic_ns
+            if last_pong is not None and time.monotonic_ns() - last_pong > timeout_ns:
+                self._on_worker_exit()
+                return
+
     def _drain_journal(self) -> None:
         """把 worker journal pending 排空到父端（可靠事件路径）。
 
@@ -466,6 +515,12 @@ class PoseRuntime:
         jp = getattr(self.config, "worker_journal_path", "")
         if not jp:
             return
+        now_ns = time.monotonic_ns()
+        if now_ns - self._last_drain_monotonic_ns < _DRAIN_THROTTLE_NS:
+            # 节流：INFERENCE_RESULT 每秒触发 8-32 次，SQLite 打开/查询/关闭只需 4Hz 级；
+            # pending 行不丢，顺延到下一个时间片被捡起。
+            return
+        self._last_drain_monotonic_ns = now_ns
         from .contracts import FallTransitionV1
         for row in self._journal_pending_rows(jp):
             eid = row["event_id"]
@@ -661,7 +716,28 @@ class PoseRuntime:
             return 0
         return 1 if getattr(c, "is_alive", lambda: False)() else 0
 
+    def _read_spool_pending(self) -> int | None:
+        """读父端 event spool 的 pending 计数；无路径或任何异常返回 None（快照保持 delivery_metrics={}）。
+
+        独立 sqlite 文件、不碰 runtime 锁；调用方应在 self._lock 之外调用（registry 锁内
+        持锁做 sqlite 读无死锁风险，但锁外更稳妥）。只读计数，用完即关。
+        """
+        sp = getattr(self.config, "event_spool_path", "")
+        if not sp:
+            return None
+        from .event_spool import EventSpool
+        try:
+            spool = EventSpool(sp, pending_capacity=1)
+            try:
+                return spool.pending_count()
+            finally:
+                spool.close()
+        except Exception:
+            return None
+
     def health_snapshot(self, runtime_key: str | None = None) -> FallRuntimeHealthSnapshotV1:
+        # spool 读数在 self._lock 之外完成（避免持 runtime 锁做 sqlite I/O）
+        spool_pending = self._read_spool_pending()
         with self._lock:
             wh = WorkerHealthV1(
                 schema_version=1,
@@ -673,13 +749,14 @@ class PoseRuntime:
                 cuda_device=self._device,
                 cuda_device_name=self._device_name,
                 model_sha256=self._model_sha256,
-                last_heartbeat_monotonic_ns=None,
+                last_heartbeat_monotonic_ns=self._last_pong_monotonic_ns,
                 restart_count=self.restart_count,
             )
-        with self._lock:
             return FallRuntimeHealthSnapshotV1(
-                schema_version=1, enabled=True, mode="shadow", runtime_key=runtime_key,
-                worker=wh, gpu_metrics={}, model_metadata={}, delivery_metrics={},
+                schema_version=1, enabled=True, mode=self._mode, runtime_key=runtime_key,
+                worker=wh, gpu_metrics={}, model_metadata={},
+                delivery_metrics=({} if spool_pending is None
+                                  else {"spool_pending": spool_pending}),
                 cameras=tuple(
                     CameraFallHealthV1(camera_id=k[0], camera_session_id=k[1], state=self._state,
                                        submitted_total=self._submitted_total.get(k, 0),

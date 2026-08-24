@@ -126,11 +126,7 @@ class VisionPipeline(threading.Thread):
             tracks = self._tracker.skip(self._frame_id)
         self._record_stage("detect", time.perf_counter() - t0)
 
-        # 2. 跟踪
-        t0 = time.perf_counter()
-        self._record_stage("track", time.perf_counter() - t0)
-
-        # 3. 可插拔任务
+        # 2. 可插拔任务
         t0 = time.perf_counter()
         context = PipelineContext(
             camera_id=self.camera_id,
@@ -156,7 +152,7 @@ class VisionPipeline(threading.Thread):
                 logger.exception("[vision] task %s failed", task.name)
         self._record_stage("tasks", time.perf_counter() - t0)
 
-        # 4. 输出回调(帧 + 当前 track 快照)
+        # 3. 输出回调(帧 + 当前 track 快照)
         t0 = time.perf_counter()
         if self._on_frame:
             self._on_frame(context)

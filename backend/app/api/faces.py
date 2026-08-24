@@ -112,6 +112,8 @@ async def analyze_registration_frames(
     db: AsyncSession = Depends(get_db),
 ):
     """批量质量分析(不写库):摄像头实时采集的候选帧 → 返回各帧质量与推荐帧。"""
+    if len(frames) > 30:
+        raise HTTPException(422, "单次最多上传 30 帧")
     meta = _parse_registration_metadata(metadata_json, len(frames))
     images = await _decode_registration_files(frames)
     svc = _get_service(db)
@@ -164,6 +166,8 @@ async def commit_registration_frames(
     db: AsyncSession = Depends(get_db),
 ):
     """提交注册:服务端复验后原子入库(create 新身份 / append 已有身份)。"""
+    if len(frames) > 30:
+        raise HTTPException(422, "单次最多上传 30 帧")
     if mode == "create" and not name:
         raise HTTPException(422, "create 模式必须提供姓名")
     if mode == "append" and identity_id is None:

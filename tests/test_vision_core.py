@@ -1,4 +1,8 @@
-"""vision 内核单元测试(ByteTrack 跟踪器 + 数据模型 + 任务接口 + 配置)。"""
+"""vision 内核单元测试(ByteTrack 跟踪器 + 数据模型 + 任务接口 + 配置 + 采集层)。"""
+
+import os
+
+import pytest
 
 from vision.config import TrackConfig, VisionConfig
 from vision.events import FaceResult, PipelineContext, TrackResult, VisionEvent
@@ -207,3 +211,84 @@ def test_tracker_carries_embedding_frame_id_only_from_detection():
     predicted = tracker.skip(2)[0]
     assert first.embedding_frame_id == 1
     assert predicted.embedding_frame_id == 1
+
+
+# ── 采集层(RTSP open 超时 env) ──────────────────────────
+
+
+class _FakeCap:
+    """VideoCapture 替身:记录构造参数与构造时刻的 env(不真正打开设备)。"""
+
+    last_init_args = ()
+    last_env_at_construct = None
+
+    def __init__(self, *args):
+        _FakeCap.last_init_args = args
+        _FakeCap.last_env_at_construct = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+
+    def set(self, *_args):
+        return True
+
+    def isOpened(self):
+        return True
+
+    def release(self):
+        pass
+
+
+@pytest.fixture
+def _ffmpeg_opts_env():
+    """隔离 OPENCV_FFMPEG_CAPTURE_OPTIONS: 测试前删除, 结束后恢复/删除。"""
+    saved = os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+        else:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = saved
+
+
+def test_camera_open_rtsp_sets_ffmpeg_timeout_before_construct(monkeypatch, _ffmpeg_opts_env):
+    """修复: 网络流的 FFMPEG 超时 env 必须在 capture 构造前生效(构造即打开)。"""
+    from vision import camera as camera_mod
+
+    monkeypatch.setattr(camera_mod.cv2, "VideoCapture", _FakeCap)
+    src = camera_mod.OpenCVFrameSource("rtsp://x")
+    assert src.open()
+
+    opts = os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"]
+    assert "rtsp_transport;tcp" in opts
+    assert "timeout" in opts and "5000000" in opts
+    # 走 FFMPEG 后端构造, 且 env 在构造之前就已就位
+    assert _FakeCap.last_init_args[0] == "rtsp://x"
+    assert _FakeCap.last_init_args[1] == camera_mod.cv2.CAP_FFMPEG
+    assert _FakeCap.last_env_at_construct == opts
+    src.release()
+
+
+def test_camera_open_rtsp_respects_existing_ffmpeg_opts(monkeypatch, _ffmpeg_opts_env):
+    """setdefault 语义: 用户已设置 OPENCV_FFMPEG_CAPTURE_OPTIONS 时不覆盖。"""
+    from vision import camera as camera_mod
+
+    monkeypatch.setattr(camera_mod.cv2, "VideoCapture", _FakeCap)
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "user;custom"
+    src = camera_mod.OpenCVFrameSource("rtsp://user-stream")
+    assert src.open()
+
+    assert os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "user;custom"
+    assert _FakeCap.last_env_at_construct == "user;custom"
+    src.release()
+
+
+def test_camera_open_local_index_leaves_ffmpeg_opts_unset(monkeypatch, _ffmpeg_opts_env):
+    """本地摄像头索引分支不设置 FFMPEG env。"""
+    from vision import camera as camera_mod
+
+    monkeypatch.setattr(camera_mod.cv2, "VideoCapture", _FakeCap)
+    src = camera_mod.OpenCVFrameSource("0")
+    assert src.open()
+
+    assert "OPENCV_FFMPEG_CAPTURE_OPTIONS" not in os.environ
+    assert _FakeCap.last_init_args == (0,)
+    src.release()

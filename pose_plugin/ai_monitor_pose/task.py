@@ -10,16 +10,7 @@ from __future__ import annotations
 import math
 import time
 import uuid
-
-
-def _trace(*parts) -> None:
-    try:
-        import time as _t
-        line = _t.strftime("%H:%M:%S") + " " + " ".join(str(p) for p in parts) + "\n"
-        with open(r"D:\ai-monitor-1.1.0\融合实施_work\pose_trace.log", "a") as f:
-            f.write(line)
-    except Exception:
-        pass
+from collections import OrderedDict
 
 from vision.tasks import VisionTask
 
@@ -67,7 +58,9 @@ class FallDetectionTask(VisionTask):
         self._lease = None
         self._closed = False
         self._next_submit_ns = int(self._clock.monotonic_ns())
-        self._seen: set[str] = set()
+        # 判重 FIFO：compatibility event_id 有界缓存，超出上限丢弃最旧（防无界增长）
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._seen_limit = 4096
         self._interval_ns = int(_NS_PER_S / max(1, self._cfg.scheduler.target_fps))
         # 姿态叠加缓存:最新一条合法 INFERENCE_RESULT 及其宿主侧接收时刻(单调时钟)
         self._last_result: dict | None = None
@@ -76,14 +69,11 @@ class FallDetectionTask(VisionTask):
     # 构造器不得加载模型 / 启动 Worker；本处仅轻量字段
 
     def should_run(self, frame_id: int, context) -> bool:
-        _trace('T.should_run cam=%s frame=%s enabled=%s closed=%s lease=%s' % (context.camera_id, frame_id, self.enabled, self._closed, self._lease))
         if self._closed or not self.enabled:
-            _trace('T.should_run->False disabled')
             return False
         if self._camera_id is None:
             self._camera_id = context.camera_id
             self._lease = self._acquire_runtime()
-            _trace('T.should_run acquired lease=%s' % (self._lease,))
         if context.camera_id != self._camera_id:
             raise TaskBindingError(f"Task 绑定 {self._camera_id}，拒绝 {context.camera_id}")
         runtime = self._lease
@@ -95,7 +85,6 @@ class FallDetectionTask(VisionTask):
             has = has or runtime.has_unseen_compatibility_event(self._camera_id, self.camera_session_id)
         # 缓存仍新鲜(TTL 内)时也要在每个 context 上重挂载 analytics,避免预览帧之间 overlay 闪断
         fresh = self._overlay_fresh()
-        _trace('T.should_run->%s due_iv=%s due_t=%s has=%s fresh=%s' % (bool(has or fresh or (due_interval and due_time)), due_interval, due_time, has, fresh))
         return bool(has or fresh or (due_interval and due_time))
 
     def run(self, frame, context) -> list:
@@ -107,7 +96,9 @@ class FallDetectionTask(VisionTask):
             for tr in getattr(bundle, "compatibility_events", ()) or ():
                 if tr.event_id in self._seen:
                     continue
-                self._seen.add(tr.event_id)
+                self._seen[tr.event_id] = None
+                if len(self._seen) > self._seen_limit:
+                    self._seen.popitem(last=False)  # FIFO：丢弃最旧
                 events.append(map_transition_to_vision_event(tr))
         has_new = self._ingest_result(bundle)
         # 提交仍受 target_fps 节流:新结果到来时立即提交,否则按步进节奏,避免 fresh 缓存导致逐帧 offer
@@ -229,6 +220,9 @@ class FallDetectionTask(VisionTask):
             config=self._cfg.runtime,  # RuntimeConfig（含 max_frame_width/height 等），PoseRuntime 契约
             event_sink=self._event_sink,
             process_factory=self._process_factory,
+            heartbeat_interval_s=self._cfg.worker.heartbeat_interval_s,
+            heartbeat_timeout_s=self._cfg.worker.heartbeat_timeout_s,
+            mode=self._cfg.mode,
         )
 
     def _offer(self, frame, context) -> None:
@@ -245,8 +239,7 @@ class FallDetectionTask(VisionTask):
             config_revision=self._cfg.config_revision,
         )
         try:
-            _r = self._lease.offer_frame(frame, meta)
-            _trace('T.offer->%s cam=%s frame=%s' % (_r, self._camera_id, context.frame_id))
-        except Exception as _e:
-            _trace('T.offer THREW %s' % repr(_e))
+            self._lease.offer_frame(frame, meta)
+        except Exception:
+            pass
         self._next_submit_ns = now + self._interval_ns

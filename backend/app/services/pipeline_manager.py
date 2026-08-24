@@ -248,6 +248,8 @@ class PipelineManager:
 
     def __init__(self):
         self._pipelines: Dict[str, VisionPipeline] = {}
+        # start_camera 进行中的占位集合:锁内 check-then-act,防并发双启动
+        self._starting: set[str] = set()
         self._subscribers: Dict[str, Dict[WebSocket, LatestFrameSender]] = defaultdict(dict)
         self._event_listeners: set[WebSocket] = set()
         self._lock = threading.Lock()
@@ -300,164 +302,181 @@ class PipelineManager:
     # ── 摄像头生命周期 ────────────────────────────────────
 
     async def start_camera(self, camera_id: str, source, config: Dict[str, Any]) -> bool:
-        existing = self._pipelines.get(camera_id)
-        if existing is not None:
-            if existing.is_alive():
+        # 锁内占位检查:并发两次 start 同一 camera 时后来者直接失败,
+        # 防止双流水线/双编码线程泄漏(原 check-then-act 锁外检查、尾段才写入 _pipelines)
+        with self._lock:
+            existing = self._pipelines.get(camera_id)
+            if existing is not None and existing.is_alive():
                 logger.warning("[pipeline-manager] camera %s already running", camera_id)
                 return False
+            if camera_id in self._starting:
+                logger.warning("[pipeline-manager] camera %s start already in progress", camera_id)
+                return False
+            self._starting.add(camera_id)
+        try:
             # 线程已退出(如源打开失败)— 清理残留后允许重启
-            await self.stop_camera(camera_id)
+            if existing is not None:
+                await self.stop_camera(camera_id)
 
-        if not self._gallery_loaded:
-            await self.load_gallery()
+            if not self._gallery_loaded:
+                await self.load_gallery()
 
-        vision_cfg = VisionConfig.from_dict(config.get("vision", {}))
-        camera_defaults = config.get("camera_defaults", {})
-        stream_cfg = config.get("stream", {})
-        from ..config import get_settings
+            vision_cfg = VisionConfig.from_dict(config.get("vision", {}))
+            camera_defaults = config.get("camera_defaults", {})
+            stream_cfg = config.get("stream", {})
+            from ..config import get_settings
 
-        settings = get_settings()
+            settings = get_settings()
 
-        # 1. 组装内核(全部依赖注入)
-        frame_source = OpenCVFrameSource(
-            source=source,
-            width=int(camera_defaults.get("width", 640)),
-            height=int(camera_defaults.get("height", 480)),
-            max_width=int(camera_defaults.get("max_width", 0)),
-        )
-        engine = self._engine_pool.get(vision_cfg)
-        tracker = ByteTracker(vision_cfg.track)
-
-        # 2. 可插拔任务
-        fall_cfg = (config.get("tasks", {}) or {}).get("fall_detection", {}) or {}
-        with self._lock:
-            # 投递模式按摄像头自己的 fall 配置解析;默认 shadow(仅持久化,不实时告警)
-            self._delivery_modes[camera_id] = str(fall_cfg.get("mode", "shadow"))
-        registry = TaskRegistry(config.get("tasks", {}))
-        extra_kwargs = {
-            "full_config": config,
-            "gallery": self._gallery,
-            "tracker": tracker,
-            "event_sink": self._event_ingress,  # 线程安全 submit → 原子入库 + Outbox
-        }
-        if fall_cfg.get("enabled"):
-            # 惰性注入姿态 Runtime 工厂 + 生产 process_factory(启用时才引入姿态包;
-            # import 不加载模型/不启 Worker;首个有效上下文 acquire 时才拉起真实 GPU 进程)
-            from pathlib import Path as _Path
-
-            # fall 配置的持久化路径在 build_camera_config 已解析为绝对路径(相对仓库根);
-            # 这里自动创建 var 目录,保证 clone 即跑的便携部署下 journal/spool 可落盘
-            rt_cfg = fall_cfg.get("runtime") or {}
-            for _p in (rt_cfg.get("worker_journal_path"), rt_cfg.get("event_spool_path")):
-                if _p:
-                    _Path(str(_p)).parent.mkdir(parents=True, exist_ok=True)
-
-            from ai_monitor_pose.runtime_registry import PoseRuntimeRegistry
-            from ai_monitor_pose.worker.launcher import build_worker_process_factory
-
-            extra_kwargs["runtime_factory"] = PoseRuntimeRegistry
-            w_cfg = fall_cfg.get("worker") or {}
-            worker_py = str(w_cfg.get("python") or "")
-            worker_mod = str(w_cfg.get("module") or "ai_monitor_pose.worker")
-            pose_root = str(_Path(worker_py).parents[2]) if worker_py else None
-            # 闭包捕获 fall_cfg:worker 进程经 WORKER_CONF 构建同源 FallTaskConfig
-            extra_kwargs["process_factory"] = build_worker_process_factory(
-                worker_py, fall_cfg, module=worker_mod, cwd=pose_root,
+            # 1. 组装内核(全部依赖注入)
+            frame_source = OpenCVFrameSource(
+                source=source,
+                width=int(camera_defaults.get("width", 640)),
+                height=int(camera_defaults.get("height", 480)),
+                max_width=int(camera_defaults.get("max_width", 0)),
             )
-        tasks = registry.load(extra_kwargs=extra_kwargs)
+            engine = self._engine_pool.get(vision_cfg)
+            tracker = ByteTracker(vision_cfg.track)
 
-        # 3. 组装流水线(帧/事件回调桥接到 asyncio loop)
-        loop = self._loop
-        push_every = min(30, max(1, int(stream_cfg.get("push_fps", settings.stream_push_fps))))
-        last_push: Dict[str, float] = {}
-
-        # 编码线程(单槽位队列,满则丢旧帧 —— 监控只需最新帧)
-        enc_q: queue.Queue = queue.Queue(maxsize=1)
-        stop_evt = threading.Event()
-        self._encode_queues[camera_id] = enc_q
-        self._encode_stops[camera_id] = stop_evt
-        enc_thread = threading.Thread(
-            target=self._encode_loop,
-            args=(camera_id, enc_q, stop_evt, loop),
-            daemon=True,
-            name=f"encode-{camera_id}",
-        )
-        enc_thread.start()
-        self._encode_threads[camera_id] = enc_thread
-
-        def _throttled_push(context) -> None:
-            if loop is None or not loop.is_running():
-                return
-            now = time.time()
-            if now - last_push.get(camera_id, 0.0) < 1.0 / push_every:
-                return
-            last_push[camera_id] = now
+            # 2. 可插拔任务
+            fall_cfg = (config.get("tasks", {}) or {}).get("fall_detection", {}) or {}
             with self._lock:
-                has_viewers = bool(self._subscribers.get(camera_id))
-                stream_metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
-            frame_copy = context.frame.copy()
-            self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧(与是否有订阅者无关)
-            persons = [t.to_dict() for t in context.tracks]
-            fall_analytics = context.analytics.get("fall_detection") if isinstance(context.analytics, dict) else None
-            if not has_viewers:
-                return  # 无订阅者:跳过编码,省 CPU
-            item = (frame_copy, persons, context.frame_id, fall_analytics)
-            try:
-                enc_q.put_nowait(item)
-                stream_metrics.record_enqueue()
-            except queue.Full:
-                # 单槽位:丢弃旧帧,保留最新
-                try:
-                    enc_q.get_nowait()
-                    stream_metrics.record_encode_drop()
-                except queue.Empty:
-                    pass
+                # 投递模式按摄像头自己的 fall 配置解析;默认 shadow(仅持久化,不实时告警)
+                self._delivery_modes[camera_id] = str(fall_cfg.get("mode", "shadow"))
+            registry = TaskRegistry(config.get("tasks", {}))
+            extra_kwargs = {
+                "full_config": config,
+                "gallery": self._gallery,
+                "tracker": tracker,
+                "event_sink": self._event_ingress,  # 线程安全 submit → 原子入库 + Outbox
+            }
+            if fall_cfg.get("enabled"):
+                # 惰性注入姿态 Runtime 工厂 + 生产 process_factory(启用时才引入姿态包;
+                # import 不加载模型/不启 Worker;首个有效上下文 acquire 时才拉起真实 GPU 进程)
+                from pathlib import Path as _Path
+
+                # fall 配置的持久化路径在 build_camera_config 已解析为绝对路径(相对仓库根);
+                # 这里自动创建 var 目录,保证 clone 即跑的便携部署下 journal/spool 可落盘
+                rt_cfg = fall_cfg.get("runtime") or {}
+                for _p in (rt_cfg.get("worker_journal_path"), rt_cfg.get("event_spool_path")):
+                    if _p:
+                        _Path(str(_p)).parent.mkdir(parents=True, exist_ok=True)
+
+                from ai_monitor_pose.runtime_registry import PoseRuntimeRegistry
+                from ai_monitor_pose.worker.launcher import build_worker_process_factory
+
+                extra_kwargs["runtime_factory"] = PoseRuntimeRegistry
+                w_cfg = fall_cfg.get("worker") or {}
+                worker_py = str(w_cfg.get("python") or "")
+                worker_mod = str(w_cfg.get("module") or "ai_monitor_pose.worker")
+                pose_root = str(_Path(worker_py).parents[2]) if worker_py else None
+                # 闭包捕获 fall_cfg:worker 进程经 WORKER_CONF 构建同源 FallTaskConfig
+                extra_kwargs["process_factory"] = build_worker_process_factory(
+                    worker_py, fall_cfg, module=worker_mod, cwd=pose_root,
+                )
+            tasks = registry.load(extra_kwargs=extra_kwargs)
+
+            # 3. 组装流水线(帧/事件回调桥接到 asyncio loop)
+            loop = self._loop
+            push_every = min(30, max(1, int(stream_cfg.get("push_fps", settings.stream_push_fps))))
+            last_push: Dict[str, float] = {}
+            last_snapshot: Dict[str, float] = {}  # 无订阅者时的抓拍存帧节流(0.5s)
+
+            # 编码线程(单槽位队列,满则丢旧帧 —— 监控只需最新帧)
+            enc_q: queue.Queue = queue.Queue(maxsize=1)
+            stop_evt = threading.Event()
+            self._encode_queues[camera_id] = enc_q
+            self._encode_stops[camera_id] = stop_evt
+            enc_thread = threading.Thread(
+                target=self._encode_loop,
+                args=(camera_id, enc_q, stop_evt, loop),
+                daemon=True,
+                name=f"encode-{camera_id}",
+            )
+            enc_thread.start()
+            self._encode_threads[camera_id] = enc_thread
+
+            def _throttled_push(context) -> None:
+                if loop is None or not loop.is_running():
+                    return
+                now = time.time()
+                if now - last_push.get(camera_id, 0.0) < 1.0 / push_every:
+                    return
+                last_push[camera_id] = now
+                with self._lock:
+                    has_viewers = bool(self._subscribers.get(camera_id))
+                    stream_metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
+                if not has_viewers:
+                    # 无订阅者(纯后台监控常态):跳过编码与全帧拷贝,
+                    # 仅以 ≥0.5s 低频刷新抓拍缓存帧(保抓拍语义)
+                    if now - last_snapshot.get(camera_id, 0.0) >= 0.5:
+                        last_snapshot[camera_id] = now
+                        self._last_frames[camera_id] = context.frame.copy()
+                    return
+                frame_copy = context.frame.copy()
+                self._last_frames[camera_id] = frame_copy  # 抓拍用原始帧(与是否有订阅者无关)
+                persons = [t.to_dict() for t in context.tracks]
+                fall_analytics = context.analytics.get("fall_detection") if isinstance(context.analytics, dict) else None
+                item = (frame_copy, persons, context.frame_id, fall_analytics)
                 try:
                     enc_q.put_nowait(item)
                     stream_metrics.record_enqueue()
                 except queue.Full:
-                    stream_metrics.record_encode_drop()
+                    # 单槽位:丢弃旧帧,保留最新
+                    try:
+                        enc_q.get_nowait()
+                        stream_metrics.record_encode_drop()
+                    except queue.Empty:
+                        pass
+                    try:
+                        enc_q.put_nowait(item)
+                        stream_metrics.record_enqueue()
+                    except queue.Full:
+                        stream_metrics.record_encode_drop()
 
-        def _handle_event(evt) -> None:
-            if loop is None or not loop.is_running():
-                return
-            asyncio.run_coroutine_threadsafe(self._on_pipeline_event(evt), loop)
+            def _handle_event(evt) -> None:
+                if loop is None or not loop.is_running():
+                    return
+                asyncio.run_coroutine_threadsafe(self._on_pipeline_event(evt), loop)
 
-        pipeline = VisionPipeline(
-            camera_id=camera_id,
-            source=frame_source,
-            engine=engine,
-            tracker=tracker,
-            config=vision_cfg,
-            tasks=tasks,
-            on_frame=_throttled_push,
-            on_event=_handle_event,
-        )
+            pipeline = VisionPipeline(
+                camera_id=camera_id,
+                source=frame_source,
+                engine=engine,
+                tracker=tracker,
+                config=vision_cfg,
+                tasks=tasks,
+                on_frame=_throttled_push,
+                on_event=_handle_event,
+            )
 
-        # per-camera 推流参数,编码线程使用
-        stream_settings = {
-            "max_height": max(0, int(stream_cfg.get("max_height", settings.stream_max_height))),
-            "jpeg_quality": min(
-                100,
-                max(1, int(stream_cfg.get("jpeg_quality", settings.stream_jpeg_quality))),
-            ),
-            "push_fps": min(30, max(1, push_every)),
-        }
-        with self._lock:
-            self._pipelines[camera_id] = pipeline
-            self._stream_settings[camera_id] = stream_settings
-            self._stream_metrics.setdefault(camera_id, StreamMetrics())
+            # per-camera 推流参数,编码线程使用
+            stream_settings = {
+                "max_height": max(0, int(stream_cfg.get("max_height", settings.stream_max_height))),
+                "jpeg_quality": min(
+                    100,
+                    max(1, int(stream_cfg.get("jpeg_quality", settings.stream_jpeg_quality))),
+                ),
+                "push_fps": min(30, max(1, push_every)),
+            }
+            with self._lock:
+                self._pipelines[camera_id] = pipeline
+                self._stream_settings[camera_id] = stream_settings
+                self._stream_metrics.setdefault(camera_id, StreamMetrics())
 
-        pipeline.start()
-        # 短暂探测:源立即打开失败的流水线线程会马上退出,据此返回失败
-        pipeline.join(timeout=1.0)
-        if not pipeline.is_alive():
-            await self.stop_camera(camera_id)
-            logger.error("[pipeline-manager] camera %s source open failed", camera_id)
-            return False
-        logger.info("[pipeline-manager] camera %s started (device=%s, pack=%s)",
-                    camera_id, engine.device, vision_cfg.model_pack)
-        return True
+            pipeline.start()
+            # 短暂探测:源立即打开失败的流水线线程会马上退出,据此返回失败
+            pipeline.join(timeout=1.0)
+            if not pipeline.is_alive():
+                await self.stop_camera(camera_id)
+                logger.error("[pipeline-manager] camera %s source open failed", camera_id)
+                return False
+            logger.info("[pipeline-manager] camera %s started (device=%s, pack=%s)",
+                        camera_id, engine.device, vision_cfg.model_pack)
+            return True
+        finally:
+            # 所有 return/异常路径(含探测失败走 stop_camera 的路径)都释放占位
+            self._starting.discard(camera_id)
 
     async def stop_camera(self, camera_id: str) -> bool:
         with self._lock:
@@ -616,13 +635,14 @@ class PipelineManager:
         """事件循环内只做协议封包和非阻塞 fanout,不直接等待 socket。"""
         frame_packet = pack_jpeg_frame(frame_id, jpeg)
         det_msg = json.dumps({"type": "detections", "frame_id": frame_id, "persons": persons})
+        # 序列化一次供全部订阅者共享(旧实现每订阅者重复 dumps 同一对象)
+        analytics_json = json.dumps(analytics_msg) if analytics_msg is not None else None
 
         with self._lock:
             senders = list(self._subscribers.get(camera_id, {}).values())
             metrics = self._stream_metrics.setdefault(camera_id, StreamMetrics())
         for sender in senders:
             before = sender.dropped_frames
-            analytics_json = json.dumps(analytics_msg) if analytics_msg is not None else None
             sender.offer(frame_packet, det_msg, analytics_json)
             metrics.record_subscriber_drops(sender.dropped_frames - before)
 
@@ -638,14 +658,14 @@ class PipelineManager:
         if not payload or not self._event_listeners:
             return
         msg = json.dumps(payload, ensure_ascii=False)
-        dead = []
-        for ws in list(self._event_listeners):
-            try:
-                await ws.send_text(msg)
-            except Exception:  # noqa: BLE001
-                dead.append(ws)
-        for ws in dead:
-            self._event_listeners.discard(ws)
+        listeners = list(self._event_listeners)
+        # 并发发送:单个慢/死 WS 不得阻塞事件循环(旧实现顺序 await)
+        results = await asyncio.gather(
+            *(ws.send_text(msg) for ws in listeners), return_exceptions=True
+        )
+        for ws, result in zip(listeners, results):
+            if isinstance(result, Exception):
+                self._event_listeners.discard(ws)
 
     # ── 事件处理与落库(EventBridge,在 asyncio loop 内执行)─
 
@@ -698,14 +718,16 @@ class PipelineManager:
 
     async def _broadcast_event(self, data: dict) -> None:
         msg = json.dumps({"type": "event", **data}, ensure_ascii=False)
-        dead = []
-        for ws in list(self._event_listeners):
-            try:
-                await ws.send_text(msg)
-            except Exception:  # noqa: BLE001
-                dead.append(ws)
-        for ws in dead:
-            self._event_listeners.discard(ws)
+        listeners = list(self._event_listeners)
+        if not listeners:
+            return
+        # 并发发送:单个慢/死 WS 不得阻塞事件循环(旧实现顺序 await)
+        results = await asyncio.gather(
+            *(ws.send_text(msg) for ws in listeners), return_exceptions=True
+        )
+        for ws, result in zip(listeners, results):
+            if isinstance(result, Exception):
+                self._event_listeners.discard(ws)
 
     # ── 抓拍 ──────────────────────────────────────────────
 

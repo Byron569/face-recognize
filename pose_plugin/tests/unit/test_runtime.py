@@ -381,6 +381,7 @@ def test_drain_journal_retries_on_next_round_and_acks_on_success(_vision_stub, t
     rt._drain_journal()
     assert _pending_event_ids(jp) == [tr.event_id]
     _clear_backoff(jp)
+    rt._last_drain_monotonic_ns = 0    # 越过 drain 节流窗口，模拟下一个 250ms 时间片
     rt._drain_journal()                              # 下轮重试成功
     assert _pending_event_ids(jp) == []
     rt.stop_and_drain_blocking()
@@ -407,6 +408,7 @@ def test_drain_journal_poison_pill_spooled_and_acked_after_max_failures(_vision_
                      drain_max_attempts=2)
     rt._drain_journal()                # 失败 #1
     _clear_backoff(jp)
+    rt._last_drain_monotonic_ns = 0    # 越过 drain 节流窗口，模拟下一个 250ms 时间片
     rt._drain_journal()                # 失败 #2 → 达上限 → 落父端 spool 兜底并 ack
     assert _pending_event_ids(jp) == []
     sp = EventSpool(rt.config.event_spool_path, pending_capacity=100)
@@ -437,6 +439,7 @@ def test_drain_journal_corrupt_payload_is_poison_pilled_to_spool(tmp_path):
                      drain_max_attempts=2)
     rt._drain_journal()
     _clear_backoff(jp)
+    rt._last_drain_monotonic_ns = 0    # 越过 drain 节流窗口，模拟下一个 250ms 时间片
     rt._drain_journal()
     assert _pending_event_ids(jp) == []
     sp = EventSpool(rt.config.event_spool_path, pending_capacity=100)
@@ -456,9 +459,70 @@ def test_drain_journal_retry_does_not_duplicate_compatibility_events(_vision_stu
     sink = _ScriptedSink(["fail", "fail", "ok"])
     rt = PoseRuntime(_drain_cfg(tmp_path), process_factory=_stub_factory, event_sink=sink)
     for _ in range(3):
+        rt._last_drain_monotonic_ns = 0  # 越过 drain 节流窗口，模拟下一个 250ms 时间片
         rt._drain_journal()
         _clear_backoff(jp)
     assert _pending_event_ids(jp) == []
     evts = rt._compatibility_by_camera.get((tr.camera_id, tr.camera_session_id), [])
     assert [e.event_id for e in evts] == [tr.event_id]
+    rt.stop_and_drain_blocking()
+
+
+# ---------------- 健康快照修复：mode 接线 / 心跳年龄 / spool_pending ----------------
+
+def test_health_snapshot_mode_reflects_injected_mode():
+    rt = PoseRuntime(_cfg(), process_factory=_stub_factory, mode="alert")
+    rt.start()
+    assert rt.health_snapshot("rk").mode == "alert"
+    rt.stop_and_drain_blocking()
+
+
+def test_health_snapshot_mode_defaults_to_shadow():
+    rt = PoseRuntime(_cfg(), process_factory=_stub_factory)
+    rt.start()
+    assert rt.health_snapshot().mode == "shadow"
+    rt.stop_and_drain_blocking()
+
+
+def test_registry_acquire_passes_mode_to_runtime_snapshot():
+    _fresh_registry()
+    l = PoseRuntimeRegistry.acquire("rk-mode", _cfg(), None,
+                                    process_factory=_stub_factory, mode="alert")
+    snap = PoseRuntimeRegistry.health_snapshot("rk-mode")
+    assert snap.mode == "alert"
+    PoseRuntimeRegistry.release(l)
+    _wait_idle("rk-mode")
+
+
+def test_health_snapshot_carries_last_pong_monotonic_ns():
+    rt = PoseRuntime(_cfg(), process_factory=_stub_factory)
+    rt.start()
+    assert rt.health_snapshot().worker.last_heartbeat_monotonic_ns is None  # 尚无 PONG
+    _feed_ready(rt)  # 建立 epoch=e1，PONG 才会通过 epoch 一致性校验
+    rt._ingest({"message_type": "PONG", "worker_epoch": "e1", "message_id": "m1",
+                "payload": {"pong_id": "p1"}})
+    snap = rt.health_snapshot()
+    assert snap.worker.last_heartbeat_monotonic_ns is not None
+    rt.stop_and_drain_blocking()
+
+
+def test_health_snapshot_reports_spool_pending(tmp_path):
+    sp = EventSpool(str(tmp_path / "spool.sqlite3"), pending_capacity=100)
+    try:
+        sp.add(make_transition(camera_id="a"))   # event_id 按 camera_id 区分
+        sp.add(make_transition(camera_id="b"))
+    finally:
+        sp.close()
+    rt = PoseRuntime(_cfg(event_spool_path=str(tmp_path / "spool.sqlite3")),
+                     process_factory=_stub_factory)
+    rt.start()
+    snap = rt.health_snapshot()
+    assert snap.delivery_metrics.get("spool_pending") == 2
+    rt.stop_and_drain_blocking()
+
+
+def test_health_snapshot_without_spool_path_keeps_delivery_metrics_empty():
+    rt = PoseRuntime(_cfg(), process_factory=_stub_factory)  # event_spool_path=""
+    rt.start()
+    assert rt.health_snapshot().delivery_metrics == {}
     rt.stop_and_drain_blocking()

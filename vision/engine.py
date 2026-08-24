@@ -31,6 +31,20 @@ class InsightFaceEngine:
         )
         self._model_root = self._resolve_model_root(config)
 
+        # 模型文件缺失时快速失败(项目硬约束:禁止运行时自动下载)。
+        # 若放行到 FaceAnalysis,insightface 会隐式联网下载 ~280MB 并阻塞启动
+        # 数分钟;这里在构造期直接抛错,指引手动下载,杜绝静默下载路径。
+        # 注意:model_pack 与底库 embedding 强绑定,缺失只允许补文件,不允许换包。
+        model_dir, detection_files, recognition_files = self._model_files()
+        if not detection_files or not recognition_files:
+            raise FileNotFoundError(
+                f"InsightFace 模型包 {config.model_pack!r} 文件缺失:"
+                f"检测模型 {len(detection_files)} 个 / 识别模型 {len(recognition_files)} 个"
+                f"(查找目录 {model_dir})。请手动下载该模型包并解压到对应目录后重启。"
+                f"禁止运行时自动下载;也不要改用其他 model_pack —— 底库 embedding "
+                f"与模型包强绑定,换包会使全部已注册人脸作废(见 configs/default.yaml 注释)。"
+            )
+
         # 延迟导入,保证 vision 包在未安装 insightface 时仍可被导入(如单元测试环境)
         from insightface.app import FaceAnalysis
 

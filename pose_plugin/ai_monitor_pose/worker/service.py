@@ -27,6 +27,7 @@ import struct
 import sys
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,12 +61,11 @@ _NOSE, _LSH, _RSH, _LHIP, _RHIP = 0, 5, 6, 11, 12
 
 _NS_PER_S = 1_000_000_000
 
+# stable_body_height 的 EMA 平滑系数：仅在（躯干直立 且 无跌倒证据）的帧上更新，
+# 防止跌倒过程（水平躺倒）中身高基准被逐步拉低。
+_STABLE_HEIGHT_EMA_ALPHA = 0.2
+
 _MAX_MSG_BYTES = 64 * 1024 * 1024
-
-
-def _trace(msg: str) -> None:
-    import sys as _sys
-    print(f"[TRACE {time.monotonic():.3f}] {msg}", file=_sys.stderr, flush=True)
 
 
 @dataclass
@@ -92,18 +92,41 @@ class _TransitionSink:
 
     def __init__(self, journal: WorkerJournal | None = None) -> None:
         self.journal = journal
-        self._submitted_id: list[str] = []
+        # recent 审计环形缓冲 + 累计计数：长运行 worker 下 pending 统计不随事件数无界增长
+        self._submitted_id: deque[str] = deque(maxlen=1024)
+        self._submitted_count = 0
 
     def submit(self, transition: FallTransitionV1) -> None:
         if self.journal is not None:
             seq = self.journal.begin_add()
             self.journal.commit(seq, transition)
         self._submitted_id.append(transition.event_id)
+        self._submitted_count += 1
 
     def close(self) -> None:
         if self.journal is not None:
             self.journal.close()
             self.journal = None
+
+
+def _resolve_model_file(model_path: str) -> tuple[str, bool]:
+    """决定实际加载的模型文件：同 stem 的 TensorRT .engine 存在且 mtime 不早于 .pt
+    时优先返回 engine（推理提速），否则回退 .pt。
+
+    纯函数（无 torch/ultralytics 依赖，可离线单测）。mtime 相等视为可用：既防
+    .pt 更新后 engine 陈旧（严格更旧回退），又避免文件系统时间戳精度抖动误判。
+    任何 OSError（engine 缺失 / stat 失败 / .pt 不可读）一律按 engine 不存在
+    处理回退 .pt，保证 engine 优选逻辑自身绝不引发启动失败。
+    """
+    try:
+        engine = pathlib.Path(model_path).with_suffix(".engine")
+        if not engine.exists():
+            return model_path, False
+        if engine.stat().st_mtime < pathlib.Path(model_path).stat().st_mtime:
+            return model_path, False
+        return str(engine), True
+    except OSError:
+        return model_path, False
 
 
 class WorkerService:
@@ -132,6 +155,10 @@ class WorkerService:
         self.model_sha256 = "mock"
 
         self._engine = engine
+        # 当前引擎是否为 TensorRT engine 后端：_ensure_engine 成功加载同 stem
+        # .engine 时置 True；构造注入 / 回退 .pt 时保持 False。trt 引擎精度已
+        # 烘焙进 engine 文件，后续 predict 不再传 half=True。
+        self._engine_is_trt: bool = False
         self._frame_reader = frame_reader or self._read_frame_default
         self._stdin = stdin
         self._stdout = stdout
@@ -139,6 +166,9 @@ class WorkerService:
         # 每个 (camera, session, track_id) 独立追踪器 + 状态机
         self._trackers: dict[tuple, PoseTracker] = {}
         self._track_states: dict[tuple, _TrackState] = {}
+
+        # 已 attach 的共享内存 region 缓存（按 shm_name 复用，避免每帧创建/销毁内核对象）
+        self._shm_regions: dict[str, object] = {}
 
         journal = None
         jp = config.runtime.worker_journal_path
@@ -153,36 +183,58 @@ class WorkerService:
             return self._engine
         model_path = self.config.model.path
         sha_file = self.config.model.sha256_file
+        # sha256 校验对象始终是 config.model.path 的 .pt（血缘凭证），
+        # 与实际加载 .engine 还是 .pt 无关。
         digest = validate_model_sha256((model_path, sha_file))["sha256"]
         import torch
         from ultralytics import YOLO
 
         assert_gpu_ready(torch)
         check_device_index(torch, self.device_index)
-        _trace("engine: torch import ok")
-        model = YOLO(model_path)
-        _trace("engine: YOLO loaded")
-        model.to(self.device)
-        _trace("engine: moved to device")
 
-        if self._half:
-            model = model.half()
-        _trace("engine: half done")
+        # TensorRT engine 优先：同 stem .engine 存在且不旧于 .pt 时加载 engine
+        # （GPU-only；引擎自含设备与精度，跳过 .to/.half）。engine 缺失 / 陈旧 /
+        # 加载抛异常一律回退 .pt 完整加载路径，绝不因 engine 阻断启动。
+        model = None
+        engine_path, use_engine = _resolve_model_file(model_path)
+        if use_engine:
+            try:
+                model = YOLO(engine_path)
+                self._engine_is_trt = True
+                print(
+                    f"[worker] TensorRT engine: {pathlib.Path(engine_path).name}",
+                    file=sys.stderr, flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 —— engine 损坏/版本不符等回退 .pt
+                print(
+                    f"[worker] engine load failed ({exc}); fallback to pt",
+                    file=sys.stderr, flush=True,
+                )
+                model = None
+                self._engine_is_trt = False
+        if model is None:
+            model = YOLO(model_path)
+            model.to(self.device)
+
+            if self._half:
+                model = model.half()
         # 预热：在进入 stdin 空闲读循环之前完成首次 CUDA/OpenMP 线程池同步，
         # 避免随后（空闲阻塞读后）首次 predict 与读循环竞争线程初始化导致 Windows 死锁。
+        # engine 分支 half 传 False：TensorRT 精度已烘焙进引擎，避免 ultralytics
+        # 对 trt 后端做 half 转换告警。
         try:
             import numpy as _np
             _imgsz = int(self.config.model.imgsz)
             _w = _np.zeros((_imgsz, _imgsz, 3), dtype=_np.uint8)
             model.predict(
-                source=_w, device=self.device_index, half=self._half,
+                source=_w, device=self.device_index,
+                half=(self._half and not self._engine_is_trt),
                 imgsz=_imgsz, conf=self.config.model.confidence,
                 iou=self.config.model.iou, max_det=self.config.model.max_detections,
                 verbose=False, workers=0,
             )
-            _trace("engine: warmup predict ok")
-        except Exception as _we:  # noqa: BLE001 —— 预热失败不阻断启动，仅记录
-            _trace(f"warmup infer skipped: {type(_we).__name__} {_we}")
+        except Exception:  # noqa: BLE001 —— 预热失败不阻断启动，仅忽略
+            pass
         self.device_name = torch.cuda.get_device_name(self.device_index)
         self.model_sha256 = digest
         self._engine = model
@@ -197,17 +249,26 @@ class WorkerService:
         from ..shared_frames import FrameShmRegion
 
         ref = SharedFrameRefV1.from_dict(fr)
-        region = FrameShmRegion(
-            shm_name=ref.shm_name,
-            max_width=0,
-            max_height=0,
-            slots=max(ref.slot_index + 1, 2),
-            attach=True,
-        )
-        try:
-            return region.read_may_raise(ref)
-        finally:
+        region = self._shm_regions.get(ref.shm_name)
+        if region is None:
+            try:
+                region = FrameShmRegion(
+                    shm_name=ref.shm_name,
+                    max_width=0,
+                    max_height=0,
+                    slots=max(ref.slot_index + 1, 2),
+                    attach=True,
+                )
+            except Exception:  # noqa: BLE001 —— attach 失败按丢帧处理，下次重新尝试
+                return None
+            self._shm_regions[ref.shm_name] = region
+        frame = region.read_may_raise(ref)
+        if frame is None:
+            # 读取失败（撕裂/父端已 unlink）：丢弃缓存 region，下次重新 attach
+            self._shm_regions.pop(ref.shm_name, None)
             region.close()
+            return None
+        return frame
 
     # ---------------------------------------------------------------- 消息处理
     def handle_message(self, message: dict) -> list[dict]:
@@ -298,13 +359,14 @@ class WorkerService:
             "message_type": "STOPPED", "worker_epoch": self.epoch, "correlation_id": corr,
             "payload": {
                 "reason": payload.get("reason", "shutdown"),
-                "pending_transition_count": len(self._sink._submitted_id),
+                "pending_transition_count": self._sink._submitted_count,
                 "exit_code_intent": 0,
             },
         }
 
     # ---------------------------------------------------------------- 推理
     def _handle_infer(self, message: dict) -> dict | None:
+        received_ns = time.time_ns()
         corr = message.get("correlation_id") or message.get("message_id")
         payload = message.get("payload") or {}
         request_id = str(payload.get("request_id", ""))
@@ -314,8 +376,12 @@ class WorkerService:
         config_revision = str(payload.get("config_revision", ""))
         now_mono = int(payload.get("observed_at_monotonic_ns", time.monotonic_ns()))
         now_unix = int(payload.get("observed_at_unix_ns", time.time_ns()))
+        # 排队等待：父端 offer 墙钟（observed_at_unix_ns）到 worker 收到消息的墙钟差
+        queue_wait_ms = max(0.0, (received_ns - now_unix) / 1e6)
 
+        t_frame = time.monotonic()
         frame = self._frame_reader(payload)
+        frame_copy_ms = (time.monotonic() - t_frame) * 1000.0
         if frame is None or getattr(frame, "shape", None) is None or frame.size == 0:
             return self._frame_rejected(
                 corr, request_id, camera_id, camera_session_id, frame_id,
@@ -329,7 +395,6 @@ class WorkerService:
 
         cfg = self.config
         t0 = time.monotonic()
-        _trace(f"infer ok frame={frame_id} {frame.shape[1]}x{frame.shape[0]} cam={camera_id}")
         try:
             engine = self._engine if self._engine is not None else self._ensure_engine()
         except Exception as exc:  # noqa: BLE001
@@ -339,7 +404,8 @@ class WorkerService:
             )
         try:
             raw_results = run_inference(
-                engine, source=frame, device=self.device_index, half=self._half,
+                engine, source=frame, device=self.device_index,
+                half=(self._half and not self._engine_is_trt),
                 imgsz=cfg.model.imgsz, conf=cfg.model.confidence,
                 iou=cfg.model.iou, max_det=cfg.model.max_detections,
             )
@@ -351,13 +417,11 @@ class WorkerService:
                 error_code=code, retryable=True, error_message=str(exc),
             )
         gpu_ms = (time.monotonic() - t0) * 1000.0
-        _trace(f"infer done gpu_ms={gpu_ms:.1f} raw={len(raw_results)} frame={frame_id}")
 
         dets = self._raw_to_detections(raw_results)
         key = (camera_id, camera_session_id)
         tracker = self._trackers.setdefault(key, PoseTracker(cfg.tracker))
         tracks = tracker.update(dets, now_mono_ns=now_mono, frame_id=frame_id)
-        _trace(f"tracker done dets={len(dets)} tracks={len(tracks)} frame={frame_id}")
 
         # 逐轨迹：特征 -> 状态机 -> finalize transition
         transitions, frame_event_ids = self._advance_state_machines(
@@ -366,9 +430,11 @@ class WorkerService:
         )
         for tr in transitions:
             self._sink.submit(tr)
-        _trace(f"machines done transitions={len(transitions)} evids={len(frame_event_ids)} frame={frame_id}")
 
         end_ms = (time.monotonic() - t0) * 1000.0
+        # 真实端到端：父端 offer 墙钟到 worker 完成时刻（含排队 + 读帧 + 推理 + 后处理）；
+        # 与 queue_wait_ms 一致做 0 下限 clamp（防系统时钟回拨产生负值）
+        end_to_end_ms = max(0.0, (time.time_ns() - now_unix) / 1e6)
         result = FallResultV1(
             schema_version=1, request_id=request_id, worker_epoch=self.epoch,
             worker_instance_id=self.instance_id, camera_id=camera_id,
@@ -378,8 +444,9 @@ class WorkerService:
             observed_at_monotonic_ns=now_mono, completed_at_monotonic_ns=now_mono,
             status="ok", config_revision=config_revision, model_name="yolov8n-pose",
             model_sha256=self.model_sha256, device=self.device, precision=self.precision,
-            queue_wait_ms=0.0, frame_copy_ms=0.0, gpu_inference_ms=gpu_ms,
-            postprocess_ms=max(0.0, end_ms - gpu_ms), end_to_end_ms=end_ms,
+            queue_wait_ms=queue_wait_ms, frame_copy_ms=frame_copy_ms,
+            gpu_inference_ms=gpu_ms,
+            postprocess_ms=max(0.0, end_ms - gpu_ms), end_to_end_ms=end_to_end_ms,
             tracks=tuple(tracks), transition_event_ids=tuple(frame_event_ids),
             error_code=None, error_message=None,
         )
@@ -501,10 +568,29 @@ class WorkerService:
 
             # 更新轨迹历史
             st.prev_keypoints = kps
-            st.prev_vertical_velocity_px_s = ev.rule_score  # 复用规则分作速度占位（非语义速度）
-            st.prev_torso_angle_deg = _estimate_torso_angle(kps)
-            st.stable_body_height = body_height if body_height > 0 else st.stable_body_height
-            if st.standing_head_y is None or not fall_evidence:
+            st.prev_vertical_velocity_px_s = ev.vertical_velocity_px_s
+            cur_torso_angle = _estimate_torso_angle(kps)
+            st.prev_torso_angle_deg = cur_torso_angle
+            cur_bbox_h = bbox[3] - bbox[1]
+            upright = (
+                cur_torso_angle is not None
+                and cur_torso_angle < alg.upright_torso_inclination_max_deg
+            )
+            # 身高基准：首帧初始化（stable 为 0 时取 bbox 高，保持原语义）；
+            # 此后仅在（直立 且 无跌倒证据）帧做 EMA，走近/走远时缓慢跟随，
+            # 跌倒过程中的水平 bbox 不再把基准拉低。更新发生在 evidence 计算之后，
+            # 当帧 evidence 仍用旧基准，避免当帧自证。
+            if st.stable_body_height <= 0:
+                if cur_bbox_h > 0:
+                    st.stable_body_height = cur_bbox_h
+            elif upright and not fall_evidence and cur_bbox_h > 0:
+                st.stable_body_height = (
+                    st.stable_body_height * (1.0 - _STABLE_HEIGHT_EMA_ALPHA)
+                    + cur_bbox_h * _STABLE_HEIGHT_EMA_ALPHA
+                )
+            # 头部基准：保持“最后站立头位”，仅在（直立 且 无跌倒证据）帧更新，
+            # 使头部下降量在跌倒过程中即相对站立基线累计。
+            if st.standing_head_y is None or (upright and not fall_evidence):
                 st.standing_head_y = kps[_NOSE][1] if _visible(kps) else bbox[1]
             st.last_obs_ns = now_mono
 
@@ -516,7 +602,9 @@ class WorkerService:
         from_state, to_state = _INCIDENT_FLOW.get(event.event_type, (PoseStateV1.NORMAL, PoseStateV1.NORMAL))
         return FallTransitionV1(
             schema_version=1, event_id=uuid.uuid4().hex,
-            dedupe_key=f"{camera_id}:{track.pose_track_id}:{event.event_type}",
+            # incident_id 参与去重：worker 崩溃重启后 track_id 从 1 重新计数，
+            # 同一 camera_session 下同一 track 的新一次真实跌倒不得与历史事件撞 key
+            dedupe_key=f"{camera_id}:{track.pose_track_id}:{event.incident_id}:{event.event_type}",
             incident_id=event.incident_id, event_type=event.event_type,
             camera_id=camera_id, camera_session_id=camera_session_id,
             pose_track_id=track.pose_track_id, source_frame_id=frame_id,
@@ -653,7 +741,6 @@ class _RawStdio:
     def writeall(self, data: bytes) -> bool:
         import ctypes
 
-        _trace("RAWW hout=%d len=%d" % (int(self.hout), len(data)))
         buf = ctypes.create_string_buffer(data, len(data))
         addr = ctypes.addressof(buf)
         offset = 0
@@ -664,13 +751,9 @@ class _RawStdio:
                 len(data) - offset, ctypes.byref(got), None,
             )
             if not ok:
-                _trace("RAWW FAIL hout=%d err=%d partial=%d" % (
-                    int(self.hout), ctypes.get_last_error(), offset))
                 return False
             n = got.value
-            _trace("RAWW wrote chunk=%d total=%d" % (n, offset + n))
             if n == 0:
-                _trace("RAWW ZERO hout=%d" % int(self.hout))
                 return False
             offset += n
         return True
